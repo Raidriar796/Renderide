@@ -87,15 +87,9 @@ pub fn apply_window_event(
             }
             apply_keyboard_event(acc, event);
         }
-        WindowEvent::Ime(ime) => {
+        WindowEvent::Ime(Ime::Commit(s)) => {
             profiling::scope!("frontend::window_event", "ime");
-            match ime {
-                Ime::Commit(s) => acc.push_ime_commit(s.as_str()),
-                Ime::Enabled
-                | Ime::Disabled
-                | Ime::Preedit(_, _)
-                | Ime::DeleteSurrounding { .. } => {}
-            }
+            acc.push_ime_commit(s.as_str());
         }
         WindowEvent::DragDropped { paths, position } => {
             profiling::scope!("frontend::window_event", "dropped_file");

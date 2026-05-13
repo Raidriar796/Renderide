@@ -4316,15 +4316,7 @@ impl MemoryPackable for GaussianRotationFormat {
         unpacker: &mut MemoryUnpacker<'_, '_, P>,
     ) -> Result<(), WireDecodeError> {
         let raw = unpacker.read::<i32>()?;
-        *self = if raw == 0 {
-            Self::PackedNorm10
-        } else {
-            trace!(
-                "invalid GaussianRotationFormat wire value {}; using default",
-                raw
-            );
-            Self::PackedNorm10
-        };
+        *self = Self::from_i32(raw);
         Ok(())
     }
 }
