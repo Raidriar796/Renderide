@@ -13,7 +13,7 @@ pub struct ExperimentalSettings {
 impl Default for ExperimentalSettings {
     fn default() -> Self {
         Self {
-            reflection_probe_sh2_enabled: true,
+            reflection_probe_sh2_enabled: false,
         }
     }
 }
