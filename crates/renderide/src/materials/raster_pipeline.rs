@@ -11,11 +11,11 @@ use crate::gpu::{
 };
 use crate::materials::material_passes::{DefaultPassParams, MaterialPassDesc, default_pass};
 use crate::materials::pipeline_build_error::PipelineBuildError;
+use crate::materials::wgsl_reflect::reflect_raster_material_wgsl_with_vertex_entries;
 use crate::materials::{MaterialRenderState, RasterFrontFace, RasterPrimitiveTopology};
 use crate::materials::{
-    ReflectedRasterLayout, ReflectedVertexInputFormat, reflect_raster_material_wgsl,
-    validate_layout_against_limits, validate_per_draw_group2,
-    validate_vertex_layout_against_limits,
+    ReflectedRasterLayout, ReflectedVertexInputFormat, validate_layout_against_limits,
+    validate_per_draw_group2, validate_vertex_layout_against_limits,
 };
 
 /// Swapchain-relevant state needed to build a [`wgpu::RenderPipeline`].
@@ -47,14 +47,14 @@ pub(crate) struct ShaderModuleBuildRefs<'a> {
 
 impl<'a> ShaderModuleBuildRefs<'a> {
     /// Fills in the raster pipeline label used for layout and pipeline naming.
-    pub(crate) fn with_label(self, label: &'static str) -> ReflectiveRasterShaderContext<'a> {
+    pub(crate) fn with_label(self, label: impl Into<String>) -> ReflectiveRasterShaderContext<'a> {
         ReflectiveRasterShaderContext {
             device: self.device,
             limits: self.limits,
             module: self.module,
             desc: self.desc,
             wgsl_source: self.wgsl_source,
-            label,
+            label: label.into(),
         }
     }
 }
@@ -72,10 +72,11 @@ pub(crate) struct ReflectiveRasterShaderContext<'a> {
     /// Full WGSL source for reflection (vertex stream layout).
     pub wgsl_source: &'a str,
     /// Label prefix for pipeline layout and pipelines.
-    pub label: &'static str,
+    pub label: String,
 }
 
 /// UV / color vertex stream inclusion for [`pipeline_layout_and_vertex_streams`] and multi-pass builds.
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct VertexStreamToggles {
     /// Request UV0 stream when the shader references it.
     pub include_uv_vertex_buffer: bool,
@@ -282,9 +283,10 @@ fn pipeline_layout_and_vertex_streams(
     device: &wgpu::Device,
     limits: &crate::gpu::GpuLimits,
     wgsl_source: &str,
-    label: &'static str,
+    label: &str,
+    vertex_entries: &[&str],
 ) -> Result<(wgpu::PipelineLayout, ReflectedMeshForwardVertexStreams), PipelineBuildError> {
-    let reflected = reflect_raster_material_wgsl(wgsl_source)?;
+    let reflected = reflect_raster_material_wgsl_with_vertex_entries(wgsl_source, vertex_entries)?;
     validate_per_draw_group2(&reflected.per_draw_entries)?;
     let frame_entries = frame_bind_group_layout_entries();
     validate_layout_against_limits(&reflected, &frame_entries, limits)?;
@@ -319,7 +321,10 @@ pub(crate) fn build_pipeline_from_pass(
     render_state: MaterialRenderState,
 ) -> wgpu::RenderPipeline {
     profiling::scope!("materials::build_pipeline_from_pass");
-    let pass_label = format!("{}__{}", shared.label, pass.name);
+    let pass_label = format!(
+        "{}__{}__vs_{}__fs_{}",
+        shared.label, pass.name, pass.vertex_entry, pass.fragment_entry
+    );
     {
         profiling::scope!("materials::create_render_pipeline_wgpu");
         let pipeline = shared
@@ -390,8 +395,9 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipeline(
         use_alpha_blending: raster.use_alpha_blending,
         depth_write: raster.depth_write_enabled,
     });
+    let vertex_entries = [pass.vertex_entry];
     let (layout, vertex_streams) =
-        pipeline_layout_and_vertex_streams(device, limits, wgsl_source, label)?;
+        pipeline_layout_and_vertex_streams(device, limits, wgsl_source, label, &vertex_entries)?;
     let wide_uv_attributes = wide_uv_attributes_for_streams(
         &vertex_streams,
         raster.include_uv_vertex_buffer,
@@ -436,11 +442,16 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipelines(
             label: shader.label,
         });
     }
+    let vertex_entries = passes
+        .iter()
+        .map(|pass| pass.vertex_entry)
+        .collect::<Vec<_>>();
     let (layout, vertex_streams) = pipeline_layout_and_vertex_streams(
         shader.device,
         shader.limits,
         shader.wgsl_source,
-        shader.label,
+        shader.label.as_str(),
+        &vertex_entries,
     )?;
     let wide_uv_attributes = wide_uv_attributes_for_streams(
         &vertex_streams,
@@ -460,7 +471,7 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipelines(
         device: shader.device,
         module: shader.module,
         desc: shader.desc,
-        label: shader.label,
+        label: shader.label.as_str(),
         layout: &layout,
         vertex_buffers: &vertex_buffers,
         front_face,
