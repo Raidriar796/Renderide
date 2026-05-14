@@ -19,12 +19,6 @@ use super::DrawCollectionContext;
 use super::candidate::{DrawCandidate, evaluate_draw_candidate};
 use super::world_matrix::{front_face_for_draw_matrices, world_matrix_for_local_vertex_stream};
 
-/// Rayon chunk width when iterating a pre-expanded [`super::FramePreparedRenderables`] list.
-///
-/// Matches the scene-walk chunk width so per-view CPU cost stays bounded by the same per-task
-/// overhead as the scene-walk path.
-pub(super) const PREPARED_CHUNK_SIZE: usize = 64;
-
 /// Returns true when two prepared slot entries came from the same source renderer.
 #[inline]
 pub(in crate::world_mesh::draw_prep) fn prepared_draws_share_renderer(

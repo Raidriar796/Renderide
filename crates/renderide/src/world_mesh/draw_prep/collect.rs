@@ -36,7 +36,7 @@ mod scene_walk;
 mod world_matrix;
 
 use filter_masks::build_per_space_filter_masks;
-use prepared::{PREPARED_CHUNK_SIZE, collect_prepared_chunk};
+use prepared::collect_prepared_chunk;
 use scene_walk::{build_chunk_specs, collect_chunk, estimate_active_renderable_count};
 
 #[cfg(test)]
@@ -223,21 +223,18 @@ fn collect_world_mesh_chunks(
             "prepared renderables were built for a different render context than the per-view draw collection -- material overrides would disagree"
         );
         profiling::scope!("mesh::collect_prepared");
-        // Run-aligned chunking ensures every renderer's slots stay inside one chunk so the
+        // Cached run-aligned chunking ensures every renderer's slots stay inside one chunk so the
         // per-renderer CPU cull and material-batch lookup happens at most once per renderer per
-        // view (the prior `par_chunks(PREPARED_CHUNK_SIZE)` path duplicated that work whenever a
-        // chunk seam fell inside a renderer run).
-        let run_chunks = {
-            profiling::scope!("mesh::collect_prepared::run_aligned_chunks");
-            prepared.run_aligned_chunks(PREPARED_CHUNK_SIZE)
-        };
+        // view without allocating a chunk list per view.
+        let run_chunks = prepared.run_chunks();
         let draws = prepared.draws();
         if parallelism == WorldMeshDrawCollectParallelism::Full && run_chunks.len() >= 2 {
             profiling::scope!("mesh::collect_prepared::parallel_chunks");
             run_chunks
                 .par_iter()
-                .map(|runs| {
+                .map(|&chunk| {
                     profiling::scope!("mesh::collect_prepared::chunk_worker");
+                    let runs = prepared.runs_for_chunk(chunk);
                     collect_prepared_chunk(draws, runs, ctx, cache, filter_masks)
                 })
                 .collect()
@@ -245,7 +242,10 @@ fn collect_world_mesh_chunks(
             profiling::scope!("mesh::collect_prepared::serial_chunks");
             run_chunks
                 .iter()
-                .map(|runs| collect_prepared_chunk(draws, runs, ctx, cache, filter_masks))
+                .map(|&chunk| {
+                    let runs = prepared.runs_for_chunk(chunk);
+                    collect_prepared_chunk(draws, runs, ctx, cache, filter_masks)
+                })
                 .collect()
         }
     } else {

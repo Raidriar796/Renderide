@@ -33,6 +33,9 @@ pub(in crate::world_mesh::draw_prep) use expand::estimated_draw_count;
 pub(in crate::world_mesh::draw_prep) use expand::expand_space_into;
 pub(in crate::world_mesh::draw_prep) use expand::expand_space_into_aggressive;
 
+/// Target draw count for one prepared renderer-run chunk.
+pub(super) const PREPARED_RUN_CHUNK_DRAW_TARGET: usize = 64;
+
 /// One fully-resolved draw slot (renderer x material slot mapped to a submesh range) for the current frame.
 ///
 /// All fields here are functions of `(scene, mesh_pool, render_context)` and are therefore safe
@@ -93,6 +96,43 @@ pub(super) struct FramePreparedRun {
     pub end: u32,
 }
 
+/// Contiguous range of [`FramePreparedRenderables::runs`] consumed as one collection task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct FramePreparedRunChunk {
+    /// First run index in this chunk.
+    start: usize,
+    /// One-past-last run index in this chunk.
+    end: usize,
+}
+
+/// Rebuilds cached run-chunk ranges from renderer-run metadata.
+fn populate_run_chunks(
+    runs: &[FramePreparedRun],
+    run_chunks: &mut Vec<FramePreparedRunChunk>,
+    target_chunk_size: usize,
+) {
+    run_chunks.clear();
+    if runs.is_empty() {
+        return;
+    }
+    let target_chunk_size = target_chunk_size.max(1);
+    let mut run_start = 0usize;
+    while run_start < runs.len() {
+        let draw_start = runs[run_start].start as usize;
+        let mut run_end = run_start + 1;
+        while run_end < runs.len()
+            && (runs[run_end - 1].end as usize).saturating_sub(draw_start) < target_chunk_size
+        {
+            run_end += 1;
+        }
+        run_chunks.push(FramePreparedRunChunk {
+            start: run_start,
+            end: run_end,
+        });
+        run_start = run_end;
+    }
+}
+
 /// Frame-scope dense list of [`FramePreparedDraw`] entries across every active render space.
 ///
 /// Build once per frame via [`FramePreparedRenderables::build_for_frame`] and hand as a borrow to
@@ -107,9 +147,12 @@ pub struct FramePreparedRenderables {
     /// then skinned renderers (ascending index), then material slots in ascending index.
     draws: Vec<FramePreparedDraw>,
     /// Contiguous renderer runs in [`Self::draws`]. Lets per-view collection chunk the prepared
-    /// list on run boundaries via [`Self::run_aligned_chunks`] and then consume precomputed run
-    /// ranges directly instead of rediscovering boundaries inside every view/chunk.
+    /// list on run boundaries and then consume precomputed run ranges directly instead of
+    /// rediscovering boundaries inside every view/chunk.
     runs: Vec<FramePreparedRun>,
+    /// Cached chunks over [`Self::runs`] so per-view collection can fan out without allocating a
+    /// chunk-list vector per view.
+    run_chunks: Vec<FramePreparedRunChunk>,
     /// First-seen unique `(material_asset_id, property_block_id)` keys referenced by
     /// [`Self::draws`]. Material caches consume this list once per shader permutation instead of
     /// materializing and deduping every prepared draw.
@@ -136,6 +179,7 @@ impl FramePreparedRenderables {
             active_space_ids: Vec::new(),
             draws: Vec::new(),
             runs: Vec::new(),
+            run_chunks: Vec::new(),
             material_property_keys: Vec::new(),
             material_property_key_signature: empty_material_key_signature(),
             render_context,
@@ -182,6 +226,7 @@ impl FramePreparedRenderables {
         self.active_space_ids.clear();
         self.draws.clear();
         self.runs.clear();
+        self.run_chunks.clear();
         self.material_property_keys.clear();
 
         {
@@ -194,6 +239,7 @@ impl FramePreparedRenderables {
         }
 
         if self.active_space_ids.is_empty() {
+            self.material_property_key_signature = empty_material_key_signature();
             return;
         }
 
@@ -211,12 +257,7 @@ impl FramePreparedRenderables {
                     space_id,
                 );
             }
-            self.material_property_key_signature = populate_runs_and_material_keys(
-                &self.draws,
-                &mut self.runs,
-                &mut self.material_property_keys,
-                &mut self.material_property_seen_scratch,
-            );
+            self.refresh_runs_material_keys_and_chunks();
             return;
         }
 
@@ -256,45 +297,40 @@ impl FramePreparedRenderables {
             }
         }
         self.space_scratch = space_scratch;
+        self.refresh_runs_material_keys_and_chunks();
+    }
+
+    /// Refreshes renderer runs, run chunks, and material keys from the current draw list.
+    fn refresh_runs_material_keys_and_chunks(&mut self) {
         self.material_property_key_signature = populate_runs_and_material_keys(
             &self.draws,
             &mut self.runs,
             &mut self.material_property_keys,
             &mut self.material_property_seen_scratch,
         );
-    }
-
-    /// Returns slices of [`Self::draws`] aligned to renderer-run boundaries with each chunk
-    /// covering at least `target_chunk_size` draws (the last chunk may be smaller). Used by
-    /// per-view collection so the per-renderer CPU cull and material-batch lookup happens at
-    /// most once per renderer per frame even on parallel workers.
-    pub(super) fn run_aligned_chunks(&self, target_chunk_size: usize) -> Vec<&[FramePreparedRun]> {
-        if self.runs.is_empty() {
-            return Vec::new();
-        }
-        let target_chunk_size = target_chunk_size.max(1);
-        let mut chunks: Vec<&[FramePreparedRun]> = Vec::new();
-
-        let mut run_start = 0usize;
-        while run_start < self.runs.len() {
-            let draw_start = self.runs[run_start].start as usize;
-            let mut run_end = run_start + 1;
-            while run_end < self.runs.len()
-                && (self.runs[run_end - 1].end as usize).saturating_sub(draw_start)
-                    < target_chunk_size
-            {
-                run_end += 1;
-            }
-            chunks.push(&self.runs[run_start..run_end]);
-            run_start = run_end;
-        }
-        chunks
+        populate_run_chunks(
+            &self.runs,
+            &mut self.run_chunks,
+            PREPARED_RUN_CHUNK_DRAW_TARGET,
+        );
     }
 
     /// Dense prepared draw slice backing [`Self::runs`].
     #[inline]
     pub(super) fn draws(&self) -> &[FramePreparedDraw] {
         &self.draws
+    }
+
+    /// Cached run chunks consumed by per-view collection.
+    #[inline]
+    pub(super) fn run_chunks(&self) -> &[FramePreparedRunChunk] {
+        &self.run_chunks
+    }
+
+    /// Resolves a cached run chunk into the backing run slice.
+    #[inline]
+    pub(super) fn runs_for_chunk(&self, chunk: FramePreparedRunChunk) -> &[FramePreparedRun] {
+        &self.runs[chunk.start..chunk.end]
     }
 
     /// Number of expanded draws across all active render spaces.
@@ -361,16 +397,13 @@ impl FramePreparedRenderables {
         self.render_context = render_context;
         self.active_space_ids.clear();
         self.draws.clear();
+        self.runs.clear();
+        self.run_chunks.clear();
         for (id, draws) in active_with_draws {
             self.active_space_ids.push(id);
             self.draws.extend(draws.iter().cloned());
         }
-        self.material_property_key_signature = populate_runs_and_material_keys(
-            &self.draws,
-            &mut self.runs,
-            &mut self.material_property_keys,
-            &mut self.material_property_seen_scratch,
-        );
+        self.refresh_runs_material_keys_and_chunks();
     }
 }
 
@@ -481,6 +514,28 @@ mod tests {
         );
         assert_eq!(keys, vec![(7, None), (9, Some(3))]);
         assert_ne!(signature, empty_material_key_signature());
+    }
+
+    #[test]
+    fn populate_run_chunks_keeps_renderer_runs_intact() {
+        let runs = vec![
+            FramePreparedRun { start: 0, end: 2 },
+            FramePreparedRun { start: 2, end: 5 },
+            FramePreparedRun { start: 5, end: 9 },
+            FramePreparedRun { start: 9, end: 10 },
+        ];
+        let mut chunks = Vec::new();
+
+        populate_run_chunks(&runs, &mut chunks, 4);
+
+        assert_eq!(
+            chunks,
+            vec![
+                FramePreparedRunChunk { start: 0, end: 2 },
+                FramePreparedRunChunk { start: 2, end: 3 },
+                FramePreparedRunChunk { start: 3, end: 4 },
+            ]
+        );
     }
 
     #[test]
