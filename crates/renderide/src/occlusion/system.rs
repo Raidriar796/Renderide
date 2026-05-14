@@ -61,6 +61,7 @@ impl OcclusionSystem {
             ViewId::Main => self.main.clone(),
             ViewId::SecondaryCamera(_)
             | ViewId::CameraRenderTask(_)
+            | ViewId::Camera360RenderTaskFace(_)
             | ViewId::ReflectionProbeRenderTask(_) => {
                 let mut offscreen = self.offscreen.lock();
                 offscreen
@@ -77,6 +78,7 @@ impl OcclusionSystem {
             ViewId::Main => Some(self.main.clone()),
             ViewId::SecondaryCamera(_)
             | ViewId::CameraRenderTask(_)
+            | ViewId::Camera360RenderTaskFace(_)
             | ViewId::ReflectionProbeRenderTask(_) => self.offscreen.lock().get(&view).cloned(),
         }
     }
@@ -104,6 +106,7 @@ impl OcclusionSystem {
             },
             ViewId::SecondaryCamera(_)
             | ViewId::CameraRenderTask(_)
+            | ViewId::Camera360RenderTaskFace(_)
             | ViewId::ReflectionProbeRenderTask(_) => state
                 .desktop
                 .as_ref()
@@ -120,6 +123,7 @@ impl OcclusionSystem {
             ViewId::Main => false,
             ViewId::SecondaryCamera(_)
             | ViewId::CameraRenderTask(_)
+            | ViewId::Camera360RenderTaskFace(_)
             | ViewId::ReflectionProbeRenderTask(_) => self.offscreen.lock().remove(&view).is_some(),
         }
     }

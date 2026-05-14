@@ -45,6 +45,28 @@ impl CameraRenderTaskViewId {
     }
 }
 
+/// Stable logical identity for one Camera360 cubemap face.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Camera360RenderTaskFaceViewId {
+    /// Render space requested by the host task.
+    pub render_space_id: RenderSpaceId,
+    /// Dense index within the drained host task batch.
+    pub task_index: i32,
+    /// Cubemap face index in host `BitmapCube` order.
+    pub face_index: u8,
+}
+
+impl Camera360RenderTaskFaceViewId {
+    /// Builds a Camera360 cubemap face view id.
+    pub const fn new(render_space_id: RenderSpaceId, task_index: i32, face_index: u8) -> Self {
+        Self {
+            render_space_id,
+            task_index,
+            face_index,
+        }
+    }
+}
+
 /// Stable logical identity for one reflection-probe cubemap bake face.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ReflectionProbeRenderTaskViewId {
@@ -76,6 +98,8 @@ pub enum ViewId {
     SecondaryCamera(SecondaryCameraId),
     /// One-shot host camera readback task view.
     CameraRenderTask(CameraRenderTaskViewId),
+    /// One-shot Camera360 cubemap bake face view.
+    Camera360RenderTaskFace(Camera360RenderTaskFaceViewId),
     /// One-shot reflection-probe cubemap bake face view.
     ReflectionProbeRenderTask(ReflectionProbeRenderTaskViewId),
 }
@@ -89,6 +113,19 @@ impl ViewId {
     /// Builds the stable logical identity for one camera readback task view.
     pub const fn camera_render_task(render_space_id: RenderSpaceId, task_index: i32) -> Self {
         Self::CameraRenderTask(CameraRenderTaskViewId::new(render_space_id, task_index))
+    }
+
+    /// Builds the stable logical identity for one Camera360 cubemap bake face.
+    pub const fn camera360_render_task_face(
+        render_space_id: RenderSpaceId,
+        task_index: i32,
+        face_index: u8,
+    ) -> Self {
+        Self::Camera360RenderTaskFace(Camera360RenderTaskFaceViewId::new(
+            render_space_id,
+            task_index,
+            face_index,
+        ))
     }
 
     /// Builds the stable logical identity for one reflection-probe bake face view.
@@ -110,6 +147,7 @@ impl ViewId {
             Self::Main => None,
             Self::SecondaryCamera(id) => Some(id.render_space_id),
             Self::CameraRenderTask(id) => Some(id.render_space_id),
+            Self::Camera360RenderTaskFace(id) => Some(id.render_space_id),
             Self::ReflectionProbeRenderTask(id) => Some(id.render_space_id),
         }
     }

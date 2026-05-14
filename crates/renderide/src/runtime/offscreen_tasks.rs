@@ -5,5 +5,6 @@
 //! - [`readback`] -- GPU buffer-mapping plumbing shared by both task drains.
 
 pub(in crate::runtime) mod camera;
+pub(in crate::runtime) mod cube_capture;
 pub(in crate::runtime) mod readback;
 pub(in crate::runtime) mod reflection_probe;

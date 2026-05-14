@@ -10,10 +10,7 @@ use crate::shared::{
     ReflectionProbeTimeSlicingMode,
 };
 
-use super::face::{
-    finite_positive_or, host_camera_frame_for_probe_face, probe_face_world_matrix,
-    reflection_probe_clip,
-};
+use super::face::{finite_positive_or, host_camera_frame_for_probe_face, reflection_probe_clip};
 use super::*;
 
 #[test]
@@ -22,71 +19,6 @@ fn reflection_probe_captures_use_single_sample_policy() {
         REFLECTION_PROBE_SAMPLE_COUNT_POLICY,
         OffscreenSampleCountPolicy::SingleSample
     );
-}
-
-fn matrix_direction_for_uv(face: ProbeCubeFace, u: f32, v: f32) -> Vec3 {
-    let x = 2.0 * u - 1.0;
-    let y = 1.0 - 2.0 * v;
-    probe_face_world_matrix(Vec3::ZERO, face)
-        .transform_vector3(Vec3::new(x, y, 1.0))
-        .normalize()
-}
-
-#[test]
-fn cubemap_face_directions_match_bitmap_cube_order() {
-    let samples = [
-        (ProbeCubeFace::PosX, Vec3::new(1.0, 1.0, 1.0)),
-        (ProbeCubeFace::NegX, Vec3::new(-1.0, 1.0, -1.0)),
-        (ProbeCubeFace::PosY, Vec3::new(-1.0, 1.0, -1.0)),
-        (ProbeCubeFace::NegY, Vec3::new(-1.0, -1.0, 1.0)),
-        (ProbeCubeFace::PosZ, Vec3::new(-1.0, 1.0, 1.0)),
-        (ProbeCubeFace::NegZ, Vec3::new(1.0, 1.0, -1.0)),
-    ];
-    for (face, expected) in samples {
-        let actual = face.direction_for_uv(0.0, 0.0);
-        assert!((actual - expected.normalize()).length() < 1e-6);
-    }
-}
-
-#[test]
-fn cubemap_face_indices_layers_bits_are_unique() {
-    let mut bits = 0u8;
-    for (expected, face) in ProbeCubeFace::ALL.iter().copied().enumerate() {
-        assert_eq!(face.index(), expected);
-        assert_eq!(face.layer(), expected as u32);
-        assert_eq!(face.view_id_face_index(), expected as u8);
-        bits |= face.bit();
-    }
-
-    assert_eq!(bits, ProbeCubeFace::ALL_MASK);
-}
-
-#[test]
-fn cubemap_face_basis_vectors_are_orthonormal() {
-    for face in ProbeCubeFace::ALL {
-        let basis = face.basis();
-        assert!((basis.forward.length() - 1.0).abs() < 1e-6);
-        assert!((basis.right.length() - 1.0).abs() < 1e-6);
-        assert!((basis.up.length() - 1.0).abs() < 1e-6);
-        assert!(basis.forward.dot(basis.right).abs() < 1e-6);
-        assert!(basis.forward.dot(basis.up).abs() < 1e-6);
-        assert!(basis.right.dot(basis.up).abs() < 1e-6);
-    }
-}
-
-#[test]
-fn probe_face_world_matrices_match_bitmap_cube_directions() {
-    for face in ProbeCubeFace::ALL {
-        assert!((matrix_direction_for_uv(face, 0.5, 0.5) - face.basis().forward).length() < 1e-6);
-        for (u, v) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
-            let actual = matrix_direction_for_uv(face, u, v);
-            let expected = face.direction_for_uv(u, v);
-            assert!(
-                (actual - expected).length() < 1e-6,
-                "{face:?} uv=({u}, {v}) actual={actual:?} expected={expected:?}"
-            );
-        }
-    }
 }
 
 #[test]

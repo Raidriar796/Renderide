@@ -1,12 +1,10 @@
 //! Host reflection-probe cubemap bake tasks, offscreen face rendering, readback, and IPC results.
 
-use std::sync::Arc;
-
 use hashbrown::HashSet;
 
 use crate::backend::RenderBackend;
 use crate::camera::{HostCameraFrame, ViewId};
-use crate::gpu::{CUBEMAP_ARRAY_LAYERS, GpuContext};
+use crate::gpu::GpuContext;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::render_graph::{GraphExecuteError, OffscreenSampleCountPolicy};
 use crate::scene::{
@@ -18,7 +16,7 @@ use crate::shared::{
     RendererCommand, RenderingContext,
 };
 use crate::skybox::ibl_cache::{SkyboxIblConvolver, mip_levels_for_edge};
-use crate::world_mesh::{CameraTransformDrawFilter, WorldMeshDrawCollectParallelism};
+use crate::world_mesh::CameraTransformDrawFilter;
 
 mod face;
 mod onchanges;
@@ -33,15 +31,18 @@ use readback::{
     zero_probe_task_result,
 };
 
+use super::cube_capture::{
+    CubeCaptureExtent, CubeCaptureTargetError, CubeCaptureTargets,
+    render_cube_capture_faces_offscreen,
+};
 use face::{
     CUBE_FACE_COUNT, ProbeCubeFace, clear_from_reflection_probe_state,
-    draw_filter_from_reflection_probe_state, face_view_desc, host_camera_frame_for_probe_face,
+    draw_filter_from_reflection_probe_state, host_camera_frame_for_probe_face,
     reflection_probe_bake_post_processing,
 };
 
 use super::super::RendererRuntime;
-use super::super::frame::extract::{ExtractedFrame, PreparedViews};
-use super::super::frame::view_plan::{FrameViewPlan, FrameViewPlanTarget, OffscreenRtHandles};
+use super::super::frame::view_plan::{FrameViewPlan, FrameViewPlanTarget};
 use super::super::state::tick::QueuedReflectionProbeRenderTask;
 
 const RGBA16F_BYTES_PER_PIXEL: usize = 8;
@@ -181,136 +182,42 @@ enum ReflectionProbeBakeError {
     Map(String),
 }
 
-struct ProbeTaskTargets {
-    cube_texture: Arc<wgpu::Texture>,
-    face_color_views: [Arc<wgpu::TextureView>; CUBE_FACE_COUNT],
-    face_depth_textures: [Arc<wgpu::Texture>; CUBE_FACE_COUNT],
-    face_depth_views: [Arc<wgpu::TextureView>; CUBE_FACE_COUNT],
-    color_format: wgpu::TextureFormat,
-    extent: ProbeTaskExtent,
+type ProbeTaskTargets = CubeCaptureTargets;
+
+impl From<CubeCaptureTargetError> for ReflectionProbeBakeError {
+    fn from(error: CubeCaptureTargetError) -> Self {
+        match error {
+            CubeCaptureTargetError::SizeExceedsLimit { size, max } => {
+                Self::SizeExceedsLimit { size, max }
+            }
+            CubeCaptureTargetError::CubemapArrayLayersUnsupported { max } => {
+                Self::CubemapArrayLayersUnsupported { max }
+            }
+        }
+    }
 }
 
-impl ProbeTaskTargets {
-    fn create(gpu: &GpuContext, extent: ProbeTaskExtent) -> Result<Self, ReflectionProbeBakeError> {
-        let max_dim = gpu.limits().max_texture_dimension_2d();
-        if extent.size > max_dim {
-            return Err(ReflectionProbeBakeError::SizeExceedsLimit {
-                size: extent.size,
-                max: max_dim,
-            });
-        }
-        if !gpu.limits().array_layers_fit(CUBEMAP_ARRAY_LAYERS) {
-            return Err(ReflectionProbeBakeError::CubemapArrayLayersUnsupported {
-                max: gpu.limits().max_texture_array_layers(),
-            });
-        }
-        let size = wgpu::Extent3d {
-            width: extent.size,
-            height: extent.size,
-            depth_or_array_layers: CUBEMAP_ARRAY_LAYERS,
-        };
-        let cube_texture = Arc::new(gpu.device().create_texture(&wgpu::TextureDescriptor {
-            label: Some("renderide-reflection-probe-task-cube"),
-            size,
-            mip_level_count: extent.mip_levels,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: PROBE_TASK_COLOR_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::STORAGE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        }));
-        let face_color_views = std::array::from_fn(|i| {
-            Arc::new(cube_texture.create_view(&face_view_desc(
-                "renderide-reflection-probe-task-face-color",
-                i as u32,
-                PROBE_TASK_COLOR_FORMAT,
-                wgpu::TextureUsages::RENDER_ATTACHMENT,
-            )))
-        });
-        crate::profiling::note_resource_churn!(
-            TextureView,
-            "runtime::reflection_probe_task_face_color_views"
-        );
-
-        let depth_format = crate::gpu::main_forward_depth_stencil_format(gpu.device().features());
-        let depth_size = wgpu::Extent3d {
-            width: extent.size,
-            height: extent.size,
-            depth_or_array_layers: 1,
-        };
-        let face_depth_textures = std::array::from_fn(|_i| {
-            Arc::new(gpu.device().create_texture(&wgpu::TextureDescriptor {
-                label: Some("renderide-reflection-probe-task-face-depth"),
-                size: depth_size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: depth_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            }))
-        });
-        let face_depth_views = std::array::from_fn(|i| {
-            Arc::new(
-                face_depth_textures[i].create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("renderide-reflection-probe-task-face-depth"),
-                    format: Some(depth_format),
-                    dimension: Some(wgpu::TextureViewDimension::D2),
-                    usage: Some(wgpu::TextureUsages::RENDER_ATTACHMENT),
-                    aspect: wgpu::TextureAspect::All,
-                    ..Default::default()
-                }),
-            )
-        });
-        crate::profiling::note_resource_churn!(
-            TextureView,
-            "runtime::reflection_probe_task_face_depth_views"
-        );
-
-        Ok(Self {
-            cube_texture,
-            face_color_views,
-            face_depth_textures,
-            face_depth_views,
-            color_format: PROBE_TASK_COLOR_FORMAT,
-            extent,
-        })
-    }
-
-    fn to_offscreen_handles(&self, face: ProbeCubeFace) -> OffscreenRtHandles {
-        OffscreenRtHandles {
-            rt_id: -1,
-            color_view: Arc::clone(&self.face_color_views[face.index()]),
-            depth_texture: Arc::clone(&self.face_depth_textures[face.index()]),
-            depth_view: Arc::clone(&self.face_depth_views[face.index()]),
-            color_format: self.color_format,
-            sample_count_policy: REFLECTION_PROBE_SAMPLE_COUNT_POLICY,
-        }
-    }
-
-    fn cube_sample_view(&self) -> Arc<wgpu::TextureView> {
-        Arc::new(self.cube_texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("renderide-reflection-probe-onchanges-cube-view"),
-            format: Some(PROBE_TASK_COLOR_FORMAT),
-            dimension: Some(wgpu::TextureViewDimension::Cube),
-            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-            aspect: wgpu::TextureAspect::All,
-            base_mip_level: 0,
-            mip_level_count: Some(1),
-            base_array_layer: 0,
-            array_layer_count: Some(CUBEMAP_ARRAY_LAYERS),
-        }))
-    }
+fn create_probe_task_targets(
+    gpu: &GpuContext,
+    extent: ProbeTaskExtent,
+) -> Result<ProbeTaskTargets, ReflectionProbeBakeError> {
+    CubeCaptureTargets::create(
+        gpu,
+        CubeCaptureExtent::new(extent.size, extent.mip_levels),
+        PROBE_TASK_COLOR_FORMAT,
+        wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        "renderide-reflection-probe-task-cube",
+    )
+    .map_err(Into::into)
 }
 
 struct PlannedReflectionProbeTask {
     plans: Vec<FrameViewPlan<'static>>,
     targets: ProbeTaskTargets,
+    extent: ProbeTaskExtent,
     readback_layout: ProbeReadbackLayout,
 }
 
@@ -524,7 +431,7 @@ fn render_reflection_probe_task(
         ctx.gpu,
         ctx.convolver,
         planned.targets.cube_texture.as_ref(),
-        planned.targets.extent,
+        planned.extent,
         &planned.readback_layout,
     ) {
         Ok(mapped) => mapped,
@@ -577,7 +484,7 @@ fn plan_reflection_probe_task(
         .ok_or(ReflectionProbeBakeError::MissingProbeTransform(
             probe.transform_id,
         ))?;
-    let targets = ProbeTaskTargets::create(gpu, extent)?;
+    let targets = create_probe_task_targets(gpu, extent)?;
     let filter = draw_filter_from_reflection_probe_task(task, &probe.state);
     let probe_position = probe_world.col(3).truncate();
     let plans = ProbeCubeFace::ALL
@@ -602,12 +509,15 @@ fn plan_reflection_probe_task(
             viewport_px: extent.tuple(),
             clear: clear_from_reflection_probe_state(probe.state),
             post_processing: reflection_probe_bake_post_processing(),
-            target: FrameViewPlanTarget::SecondaryRt(targets.to_offscreen_handles(face)),
+            target: FrameViewPlanTarget::SecondaryRt(
+                targets.to_offscreen_handles(face, REFLECTION_PROBE_SAMPLE_COUNT_POLICY),
+            ),
         })
         .collect();
     Ok(PlannedReflectionProbeTask {
         plans,
         targets,
+        extent,
         readback_layout,
     })
 }
@@ -636,26 +546,7 @@ fn render_reflection_probe_faces_offscreen(
     plans: Vec<FrameViewPlan<'static>>,
 ) -> Result<(), ReflectionProbeBakeError> {
     profiling::scope!("reflection_probe_task::offscreen_render");
-    let prepared_views = PreparedViews::new(plans, None);
-    backend.prepare_lights_for_views(
-        scene,
-        prepared_views
-            .plans()
-            .iter()
-            .map(FrameViewPlan::light_view_desc),
-    );
-    let view_perms = prepared_views
-        .plans()
-        .iter()
-        .map(|plan| (plan.render_context(), plan.shader_permutation()))
-        .collect::<Vec<_>>();
-    let shared =
-        backend.extract_frame_shared(scene, WorldMeshDrawCollectParallelism::Full, &view_perms);
-    let submit_frame = ExtractedFrame::new(prepared_views, shared)
-        .prepare_draws()
-        .into_submit_frame();
-    submit_frame.execute(gpu, scene, backend)?;
-    Ok(())
+    render_cube_capture_faces_offscreen(gpu, backend, scene, plans).map_err(Into::into)
 }
 
 fn queue_reflection_probe_failures<'a>(

@@ -232,6 +232,8 @@ fn count_font_atlas_lod_bias_samples(src: &str) -> usize {
         .count()
 }
 
+#[path = "shader_module_audit/camera360.rs"]
+mod camera360;
 #[path = "shader_module_audit/hygiene.rs"]
 mod hygiene;
 #[path = "shader_module_audit/pbs.rs"]

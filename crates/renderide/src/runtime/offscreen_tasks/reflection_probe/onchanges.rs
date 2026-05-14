@@ -18,7 +18,8 @@ use crate::shared::{
 
 use super::{
     FrameViewPlan, FrameViewPlanTarget, ProbeCubeFace, ProbeTaskExtent, ProbeTaskTargets,
-    ReflectionProbeBakeError, RendererRuntime, clear_from_reflection_probe_state,
+    REFLECTION_PROBE_SAMPLE_COUNT_POLICY, ReflectionProbeBakeError, RendererRuntime,
+    clear_from_reflection_probe_state, create_probe_task_targets,
     draw_filter_from_reflection_probe_state, host_camera_frame_for_probe_face,
     reflection_probe_bake_post_processing, render_reflection_probe_faces_offscreen,
 };
@@ -200,7 +201,7 @@ fn start_onchanges_reflection_probe_capture(
         ));
     }
     let extent = ProbeTaskExtent::from_size(probe.state.resolution)?;
-    let targets = ProbeTaskTargets::create(gpu, extent)?;
+    let targets = create_probe_task_targets(gpu, extent)?;
     Ok(OnChangesCaptureStart::Capture(Box::new(
         ActiveOnChangesReflectionProbeCapture {
             request,
@@ -326,7 +327,11 @@ fn plan_onchanges_reflection_probe_faces(
             viewport_px: capture.extent.tuple(),
             clear: clear_from_reflection_probe_state(state),
             post_processing: reflection_probe_bake_post_processing(),
-            target: FrameViewPlanTarget::SecondaryRt(capture.targets.to_offscreen_handles(face)),
+            target: FrameViewPlanTarget::SecondaryRt(
+                capture
+                    .targets
+                    .to_offscreen_handles(face, REFLECTION_PROBE_SAMPLE_COUNT_POLICY),
+            ),
         })
         .collect())
 }
@@ -363,7 +368,9 @@ impl ActiveOnChangesReflectionProbeCapture {
             face_size: self.extent.size,
             mip_levels: self.extent.mip_levels,
             texture: Arc::clone(&self.targets.cube_texture),
-            view: self.targets.cube_sample_view(),
+            view: self
+                .targets
+                .cube_sample_view("renderide-reflection-probe-onchanges-cube-view"),
         }
     }
 }

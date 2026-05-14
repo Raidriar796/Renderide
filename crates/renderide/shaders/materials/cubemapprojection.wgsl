@@ -8,6 +8,7 @@
 //#texture_default _Cube empty
 
 #import renderide::skybox::cubemap_storage as cubemap_storage
+#import renderide::skybox::equirect as equirect
 #import renderide::post::filter_vertex as fv
 #import renderide::frame::globals as rg
 #import renderide::material::variant_bits as vb
@@ -29,9 +30,6 @@ fn kw_FLIP() -> bool {
     return vb::enabled(mat._RenderideVariantBits, CUBEMAPPROJECTION_KW_FLIP);
 }
 
-const PI: f32 = 3.14159265359;
-const TAU: f32 = 6.28318530718;
-
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
@@ -50,19 +48,6 @@ fn vs_main(
 #endif
 }
 
-fn equirect_to_dir(uv: vec2<f32>) -> vec3<f32> {
-    let h_angle = uv.x * TAU;
-    let v_angle = ((1.0 - uv.y) - 0.5) * PI;
-    let cv = cos(v_angle);
-    let sv = sin(v_angle);
-    let ch = cos(h_angle);
-    let sh = sin(h_angle);
-    var dir = vec3<f32>(0.0, 0.0, 1.0);
-    dir = vec3<f32>(dir.x, cv * dir.y - sv * dir.z, sv * dir.y + cv * dir.z);
-    dir = vec3<f32>(ch * dir.x + sh * dir.z, dir.y, -sh * dir.x + ch * dir.z);
-    return dir;
-}
-
 //#pass forward
 @fragment
 fn fs_main(
@@ -70,7 +55,7 @@ fn fs_main(
     @location(0) primary_uv: vec2<f32>,
     @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    var dir = equirect_to_dir(primary_uv);
+    var dir = equirect::uv_to_dir(primary_uv);
     let rot3 = mat3x3<f32>(mat._Rotation[0].xyz, mat._Rotation[1].xyz, mat._Rotation[2].xyz);
     dir = rot3 * dir;
     if (kw_FLIP()) {

@@ -128,8 +128,8 @@ mod tests {
     }
 
     #[test]
-    fn no_cli_uses_debug_when_not_log_verbose() {
-        assert_eq!(effective_renderer_log_level(None, false), LogLevel::Debug);
+    fn no_cli_uses_info_when_not_log_verbose() {
+        assert_eq!(effective_renderer_log_level(None, false), LogLevel::Info);
     }
 
     #[test]

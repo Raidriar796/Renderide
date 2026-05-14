@@ -22,6 +22,7 @@ use super::super::frame::view_plan::{FrameViewPlan, FrameViewPlanTarget, Offscre
 use super::readback::{AwaitBufferMapError, await_buffer_map};
 
 mod alpha_coverage;
+mod camera360;
 mod result_write;
 #[cfg(test)]
 mod tests;
@@ -127,8 +128,10 @@ pub(super) enum CameraReadbackError {
     ExtentExceedsLimit { width: u32, height: u32, max: u32 },
     #[error("CameraRenderTask format {0:?} is not supported for readback")]
     UnsupportedFormat(TextureFormat),
-    #[error("CameraRenderTask fov {0} requests deferred equirectangular capture")]
-    EquirectangularDeferred(f32),
+    #[error(
+        "CameraRenderTask Camera360 requires 6 texture array layers but max_texture_array_layers={max}"
+    )]
+    CubemapArrayLayersUnsupported { max: u32 },
     #[error("CameraRenderTask readback buffer {size} bytes exceeds device max_buffer_size={max}")]
     ReadbackBufferTooLarge { size: u64, max: u64 },
     #[error("CameraRenderTask output byte count overflow")]
@@ -341,6 +344,14 @@ struct CameraTaskRenderCtx<'a> {
 
 fn render_camera_task(ctx: CameraTaskRenderCtx<'_>) -> Result<(), CameraReadbackError> {
     profiling::scope!("camera_task::render_one");
+    if ctx
+        .task
+        .parameters
+        .as_ref()
+        .is_some_and(camera360::camera_render_parameters_request_camera360)
+    {
+        return camera360::render_camera360_task(ctx);
+    }
     let planned = plan_camera_task(
         ctx.gpu,
         ctx.scene,
@@ -388,9 +399,6 @@ fn plan_camera_task(
         .parameters
         .as_ref()
         .ok_or(CameraReadbackError::MissingParameters)?;
-    if parameters.fov >= 180.0 {
-        return Err(CameraReadbackError::EquirectangularDeferred(parameters.fov));
-    }
     let output_format = CameraTaskOutputFormat::from_texture_format(parameters.texture_format)
         .ok_or(CameraReadbackError::UnsupportedFormat(
             parameters.texture_format,

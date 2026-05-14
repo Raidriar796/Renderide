@@ -28,7 +28,8 @@ pub fn host_camera_frame_for_render_task(
     )
 }
 
-fn camera_render_task_clip(parameters: &CameraRenderParameters) -> CameraClipPlanes {
+/// Returns sanitized clip planes for a host camera readback task.
+pub(crate) fn camera_render_task_clip(parameters: &CameraRenderParameters) -> CameraClipPlanes {
     let near = finite_positive_or(parameters.near_clip, CameraClipPlanes::default().near).max(0.01);
     let far_default = CameraClipPlanes::default().far;
     let far = finite_positive_or(parameters.far_clip, far_default).max(near + 0.01);

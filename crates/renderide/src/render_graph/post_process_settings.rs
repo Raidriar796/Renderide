@@ -68,7 +68,11 @@ impl AutoExposureSettingsValue {
         Self {
             settings,
             delta_seconds,
-            instant_adaptation: matches!(view_id, crate::camera::ViewId::CameraRenderTask(_)),
+            instant_adaptation: matches!(
+                view_id,
+                crate::camera::ViewId::CameraRenderTask(_)
+                    | crate::camera::ViewId::Camera360RenderTaskFace(_)
+            ),
         }
     }
 }
@@ -97,6 +101,17 @@ mod tests {
             AutoExposureSettings::default(),
             1.0 / 60.0,
             ViewId::camera_render_task(RenderSpaceId(7), 0),
+        );
+
+        assert!(value.instant_adaptation);
+    }
+
+    #[test]
+    fn camera360_face_tasks_use_instant_auto_exposure_adaptation() {
+        let value = AutoExposureSettingsValue::for_view(
+            AutoExposureSettings::default(),
+            1.0 / 60.0,
+            ViewId::camera360_render_task_face(RenderSpaceId(7), 0, 3),
         );
 
         assert!(value.instant_adaptation);

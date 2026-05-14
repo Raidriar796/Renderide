@@ -21,22 +21,37 @@ pub(in crate::runtime) fn apply_camera_task_alpha_coverage(
     gpu: &GpuContext,
     targets: &CameraTaskTargets,
 ) {
+    apply_alpha_coverage_to_target(
+        gpu,
+        targets.color_view.as_ref(),
+        targets.depth_texture.as_ref(),
+        targets.color_format,
+        "camera_task_alpha_coverage",
+    );
+}
+
+/// Writes alpha 1 to covered pixels on an arbitrary camera-task render target.
+pub(in crate::runtime) fn apply_alpha_coverage_to_target(
+    gpu: &GpuContext,
+    color_view: &wgpu::TextureView,
+    depth_texture: &wgpu::Texture,
+    color_format: wgpu::TextureFormat,
+    label: &'static str,
+) {
     profiling::scope!("camera_task::alpha_coverage");
     let pipelines = pipeline_cache();
-    let depth_view = targets
-        .depth_texture
-        .create_view(&wgpu::TextureViewDescriptor {
-            label: Some("camera_task_alpha_coverage_depth"),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            aspect: wgpu::TextureAspect::DepthOnly,
-            ..Default::default()
-        });
+    let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("camera_task_alpha_coverage_depth"),
+        dimension: Some(wgpu::TextureViewDimension::D2),
+        aspect: wgpu::TextureAspect::DepthOnly,
+        ..Default::default()
+    });
     crate::profiling::note_resource_churn!(
         TextureView,
         "runtime::camera_task_alpha_coverage_depth_view"
     );
     let bind_group = gpu.device().create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("camera_task_alpha_coverage"),
+        label: Some(label),
         layout: pipelines.bind_group_layout(gpu.device()),
         entries: &[wgpu::BindGroupEntry {
             binding: 0,
@@ -50,14 +65,12 @@ pub(in crate::runtime) fn apply_camera_task_alpha_coverage(
 
     let mut encoder = gpu
         .device()
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("camera_task_alpha_coverage"),
-        });
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("camera_task_alpha_coverage"),
+            label: Some(label),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: targets.color_view.as_ref(),
+                view: color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
@@ -70,11 +83,7 @@ pub(in crate::runtime) fn apply_camera_task_alpha_coverage(
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(
-            pipelines
-                .pipeline(gpu.device(), targets.color_format)
-                .as_ref(),
-        );
+        pass.set_pipeline(pipelines.pipeline(gpu.device(), color_format).as_ref());
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
     }

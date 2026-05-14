@@ -14,6 +14,60 @@ fn camera_render_tasks_use_master_msaa_policy() {
 }
 
 #[test]
+fn camera360_requests_use_fov_threshold() {
+    let regular = CameraRenderParameters {
+        fov: 179.999,
+        ..Default::default()
+    };
+    let camera360_min = CameraRenderParameters {
+        fov: 180.0,
+        ..Default::default()
+    };
+    let camera360_full = CameraRenderParameters {
+        fov: 360.0,
+        ..Default::default()
+    };
+
+    assert!(!camera360::camera_render_parameters_request_camera360(
+        &regular
+    ));
+    assert!(camera360::camera_render_parameters_request_camera360(
+        &camera360_min
+    ));
+    assert!(camera360::camera_render_parameters_request_camera360(
+        &camera360_full
+    ));
+}
+
+#[test]
+fn camera360_face_size_matches_output_texel_budget() {
+    assert_eq!(
+        camera360::camera360_face_size_for_extent(CameraTaskExtent {
+            width: 3840,
+            height: 2160
+        })
+        .expect("face size"),
+        2048
+    );
+    assert_eq!(
+        camera360::camera360_face_size_for_extent(CameraTaskExtent {
+            width: 6,
+            height: 1
+        })
+        .expect("face size"),
+        1
+    );
+    assert_eq!(
+        camera360::camera360_face_size_for_extent(CameraTaskExtent {
+            width: 48,
+            height: 32
+        })
+        .expect("face size"),
+        16
+    );
+}
+
+#[test]
 fn readback_layout_removes_row_padding_contract() {
     let layout = compute_readback_layout(
         wgpu::Extent3d {
