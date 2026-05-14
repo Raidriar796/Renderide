@@ -150,7 +150,6 @@ impl FrameResourceManager {
                 refs,
                 scene_snapshots.views(),
             );
-            logger::debug!("per-view frame state: allocating for view {view_id:?}");
             let state = PerViewFrameState {
                 frame_uniform_buffer,
                 lights_buffer,
@@ -235,9 +234,7 @@ impl FrameResourceManager {
 
     /// Frees per-view frame bind resources for a view that is no longer active.
     pub fn retire_per_view_frame(&mut self, view_id: ViewId) {
-        if self.per_view_frame.retire(view_id) {
-            logger::debug!("per-view frame state: retired for view {view_id:?}");
-        }
+        self.per_view_frame.retire(view_id);
     }
 
     /// Returns the per-draw slab for the given view, creating it if it does not yet exist.
@@ -251,7 +248,6 @@ impl FrameResourceManager {
         let limits = self.limits.clone()?;
         let _ = self.per_view_per_draw_scratch_or_create(view_id);
         Some(self.per_view_draw.get_or_insert_with(view_id, || {
-            logger::debug!("per-draw slab: allocating new slab for view {view_id:?}");
             Mutex::new(PerDrawResources::new_with_layout(device, layout, limits))
         }))
     }
@@ -291,9 +287,7 @@ impl FrameResourceManager {
 
     /// Frees the per-view scratch buffers for a view that is no longer active.
     pub fn retire_per_view_per_draw_scratch(&mut self, view_id: ViewId) {
-        if self.per_view_per_draw_scratch.retire(view_id) {
-            logger::debug!("per-draw slab scratch: retired for view {view_id:?}");
-        }
+        self.per_view_per_draw_scratch.retire(view_id);
     }
 
     /// Retires all view-scoped frame resources for `view_id`.

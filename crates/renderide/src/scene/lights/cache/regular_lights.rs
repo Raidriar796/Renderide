@@ -57,11 +57,6 @@ impl LightCache {
             }
             let idx_usize = state.renderable_index as usize;
             let Some(slot) = v.get_mut(idx_usize) else {
-                logger::warn!(
-                    "light_cache: regular-light state index {} out of range (space_id={space_id}, len={})",
-                    state.renderable_index,
-                    v.len()
-                );
                 continue;
             };
             slot.data = LightData {
