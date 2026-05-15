@@ -8,7 +8,6 @@ use super::cache::{
 use super::pipeline_kind::RasterPipelineKind;
 use super::raster_pipeline::MaterialPipelineDesc;
 use super::router::MaterialRouter;
-use super::router::resolve_raster_pipeline;
 
 /// Full cache lookup request for one material pipeline variant.
 struct PipelineLookupRequest<'a> {
@@ -130,17 +129,17 @@ impl MaterialRegistry {
         self.router.remove_shader_route(shader_asset_id);
     }
 
-    /// Resolves a cached or new pipeline for a host shader asset (via router + embedded stem when applicable).
-    pub fn pipeline_for_shader_asset(
+    /// Resolves a cached or new pipeline for an already-resolved raster pipeline kind.
+    pub(crate) fn pipeline_for_resolved_kind(
         &self,
         shader_asset_id: i32,
+        kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
         variant: MaterialPipelineVariantSpec,
     ) -> Option<MaterialPipelineSet> {
-        let kind = resolve_raster_pipeline(shader_asset_id, &self.router);
         self.try_pipeline_with_fallback(PipelineLookupRequest {
             shader_asset_id: Some(shader_asset_id),
-            kind: &kind,
+            kind,
             desc,
             variant,
         })

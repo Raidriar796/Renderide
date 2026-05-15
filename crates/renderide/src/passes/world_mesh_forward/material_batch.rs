@@ -236,8 +236,10 @@ impl<'a> MaterialDrawResolver<'a> {
             pipeline_key.front_face = pipeline_key.front_face.flipped();
         }
 
-        let pipelines = self.resolve_pipelines(pipeline_key);
         let (bind_group, material_uniform_dynamic_offset) = self.resolve_embedded_bind_group(item);
+        let pipeline_kind =
+            pipeline_kind_for_material_packet(&item.batch_key.pipeline, bind_group.is_some());
+        let pipelines = self.resolve_pipelines(&pipeline_kind, pipeline_key);
 
         MaterialBatchPacket {
             first_draw_idx: first,
@@ -250,12 +252,17 @@ impl<'a> MaterialDrawResolver<'a> {
     }
 
     /// Resolves the material pipeline set for one batch.
-    fn resolve_pipelines(&self, pipeline_key: PipelineVariantKey) -> Option<MaterialPipelineSet> {
+    fn resolve_pipelines(
+        &self,
+        pipeline_kind: &RasterPipelineKind,
+        pipeline_key: PipelineVariantKey,
+    ) -> Option<MaterialPipelineSet> {
         let registry = self.registry?;
 
         let pass_desc = pipeline_key.pass_desc();
-        let pipelines = registry.pipeline_for_shader_asset(
+        let pipelines = registry.pipeline_for_resolved_kind(
             pipeline_key.shader_asset_id,
+            pipeline_kind,
             &pass_desc,
             MaterialPipelineVariantSpec {
                 permutation: pipeline_key.shader_perm,
@@ -270,15 +277,17 @@ impl<'a> MaterialDrawResolver<'a> {
             Some(p) if !p.is_empty() => Some(p),
             Some(_) => {
                 logger::trace!(
-                    "WorldMeshForward: empty pipeline for shader {:?}, skipping batch",
-                    pipeline_key.shader_asset_id
+                    "WorldMeshForward: empty pipeline for shader {:?} kind {:?}, skipping batch",
+                    pipeline_key.shader_asset_id,
+                    pipeline_kind
                 );
                 None
             }
             None => {
                 logger::trace!(
-                    "WorldMeshForward: no pipeline for shader {:?}, skipping batch",
-                    pipeline_key.shader_asset_id
+                    "WorldMeshForward: no pipeline for shader {:?} kind {:?}, skipping batch",
+                    pipeline_key.shader_asset_id,
+                    pipeline_kind
                 );
                 None
             }
@@ -291,40 +300,65 @@ impl<'a> MaterialDrawResolver<'a> {
         item: &WorldMeshDrawItem,
     ) -> (Option<Arc<wgpu::BindGroup>>, Option<u32>) {
         let batch_key = &item.batch_key;
-        if !matches!(&batch_key.pipeline, RasterPipelineKind::EmbeddedStem(_)) {
-            return (None, None);
-        }
-
-        let (Some(bind), Some(registry)) = (self.embedded_bind, self.registry) else {
-            if self.embedded_bind.is_none() {
-                logger::warn!(
-                    "WorldMeshForward: embedded material bind resources unavailable; \
-                     @group(1) uses empty bind group for embedded raster draws"
-                );
-            }
+        let RasterPipelineKind::EmbeddedStem(stem) = &batch_key.pipeline else {
             return (None, None);
         };
 
-        registry
-            .stem_for_shader_asset(batch_key.shader_asset_id)
-            .and_then(|stem| {
-                let shader_variant_bits =
-                    registry.variant_bits_for_shader_asset(batch_key.shader_asset_id);
-                bind.embedded_material_bind_group_with_cache_key(
-                    EmbeddedMaterialBindShader {
-                        stem,
-                        shader_variant_bits,
-                    },
-                    self.uploads,
-                    self.store,
-                    &self.pools,
-                    item.lookup_ids,
-                    self.offscreen_write_render_texture_asset_id,
-                )
-                .ok()
-                .map(|(_, bg)| (Some(bg.bind_group), bg.uniform_dynamic_offset))
-            })
-            .unwrap_or((None, None))
+        let Some(bind) = self.embedded_bind else {
+            logger::warn!(
+                "WorldMeshForward: embedded material bind resources unavailable; \
+                 falling back to Null pipeline for shader_asset_id={} material_asset_id={} \
+                 property_block_slot0={:?} stem={}",
+                batch_key.shader_asset_id,
+                item.lookup_ids.material_asset_id,
+                item.lookup_ids.mesh_property_block_slot0,
+                stem.as_ref()
+            );
+            return (None, None);
+        };
+
+        let shader_variant_bits = self
+            .registry
+            .and_then(|registry| registry.variant_bits_for_shader_asset(batch_key.shader_asset_id));
+        match bind.embedded_material_bind_group_with_cache_key(
+            EmbeddedMaterialBindShader {
+                stem: stem.as_ref(),
+                shader_variant_bits,
+            },
+            self.uploads,
+            self.store,
+            &self.pools,
+            item.lookup_ids,
+            self.offscreen_write_render_texture_asset_id,
+        ) {
+            Ok((_, bg)) => (Some(bg.bind_group), bg.uniform_dynamic_offset),
+            Err(e) => {
+                logger::warn!(
+                    "WorldMeshForward: embedded material bind failed; \
+                     falling back to Null pipeline for shader_asset_id={} material_asset_id={} \
+                     property_block_slot0={:?} stem={} error={}",
+                    batch_key.shader_asset_id,
+                    item.lookup_ids.material_asset_id,
+                    item.lookup_ids.mesh_property_block_slot0,
+                    stem.as_ref(),
+                    e
+                );
+                (None, None)
+            }
+        }
+    }
+}
+
+/// Selects the pipeline family that is safe for the resolved material bind-group state.
+fn pipeline_kind_for_material_packet(
+    batch_pipeline: &RasterPipelineKind,
+    embedded_bind_group_resolved: bool,
+) -> RasterPipelineKind {
+    match batch_pipeline {
+        RasterPipelineKind::EmbeddedStem(stem) if embedded_bind_group_resolved => {
+            RasterPipelineKind::EmbeddedStem(stem.clone())
+        }
+        RasterPipelineKind::EmbeddedStem(_) | RasterPipelineKind::Null => RasterPipelineKind::Null,
     }
 }
 
@@ -350,6 +384,7 @@ fn collect_material_batch_boundaries_into(
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
+    use std::sync::Arc;
 
     use super::*;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
@@ -373,6 +408,11 @@ mod tests {
             front_face: RasterFrontFace::CounterClockwise,
             primitive_topology: RasterPrimitiveTopology::TriangleList,
         })
+    }
+
+    /// Builds an embedded pipeline kind for packet-selection tests.
+    fn embedded_pipeline(stem: &'static str) -> RasterPipelineKind {
+        RasterPipelineKind::EmbeddedStem(Arc::from(stem))
     }
 
     #[test]
@@ -418,5 +458,49 @@ mod tests {
         a.front_face = RasterFrontFace::Clockwise;
         b.front_face = RasterFrontFace::CounterClockwise;
         assert_ne!(a, b);
+    }
+
+    /// Embedded packets keep their embedded pipeline only when group 1 was resolved.
+    #[test]
+    fn material_packet_keeps_embedded_pipeline_with_resolved_bind_group() {
+        let pipeline = embedded_pipeline("xstoon2.0_default");
+
+        assert_eq!(
+            pipeline_kind_for_material_packet(&pipeline, true),
+            embedded_pipeline("xstoon2.0_default")
+        );
+    }
+
+    /// Embedded packets use the null pipeline when group 1 cannot match the embedded layout.
+    #[test]
+    fn material_packet_falls_back_to_null_when_embedded_bind_group_is_missing() {
+        let pipeline = embedded_pipeline("xstoon2.0_default");
+
+        assert_eq!(
+            pipeline_kind_for_material_packet(&pipeline, false),
+            RasterPipelineKind::Null
+        );
+    }
+
+    /// Null packets can safely keep using the empty material bind group.
+    #[test]
+    fn material_packet_keeps_null_pipeline_with_empty_material_group() {
+        assert_eq!(
+            pipeline_kind_for_material_packet(&RasterPipelineKind::Null, false),
+            RasterPipelineKind::Null
+        );
+    }
+
+    /// Packet selection honors the draw batch snapshot instead of a later router route.
+    #[test]
+    fn material_packet_uses_draw_batch_pipeline_snapshot() {
+        let current_router_route = embedded_pipeline("xstoon2.0_default");
+        let stale_draw_batch_pipeline = RasterPipelineKind::Null;
+
+        assert_eq!(
+            pipeline_kind_for_material_packet(&stale_draw_batch_pipeline, true),
+            RasterPipelineKind::Null
+        );
+        assert_ne!(stale_draw_batch_pipeline, current_router_route);
     }
 }
