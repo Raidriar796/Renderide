@@ -188,7 +188,7 @@ fn direct_specular(
         terms.specular_reflectance,
         terms.energy_compensation,
         max(0.0, xb::mat._SpecularIntensity),
-        xb::mat._SpecularAlbedoTint,
+        1.0, // xb::mat._SpecularAlbedoTint, // Not provided by FrooxEngine, Unity default is 1
     );
 }
 

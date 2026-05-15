@@ -93,7 +93,7 @@ struct XiexeToon2Material {
     /// Lerp factor that tints rim by albedo.
     _RimAlbedoTint: f32,
     /// Lerp factor that tints rim by the env-map sample.
-    _RimCubemapTint: f32,
+    _RimCubemapTint: f32, //#mat_default float 0.0
     /// Lerp factor that gates rim by light attenuation + ambient.
     _RimAttenEffect: f32,
     /// Rim brightness multiplier.
@@ -110,7 +110,7 @@ struct XiexeToon2Material {
     /// Specular-area smoothness override; remapped to roughness in `direct_specular`.
     _SpecularArea: f32,
     /// Lerp factor that tints specular highlight by albedo.
-    _SpecularAlbedoTint: f32,
+    _SpecularAlbedoTint: f32, //#mat_default float 1.0
 
     /// Sharpens the shadow attenuation transition. `0` = smooth, `1` = hard step.
     _ShadowSharpness: f32,
