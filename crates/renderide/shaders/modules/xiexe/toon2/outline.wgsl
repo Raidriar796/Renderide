@@ -32,10 +32,9 @@
 /// Outline vertex transform. Samples `_OutlineMask` at UV0, extrudes
 /// the vertex along its object-space normal by `_OutlineWidth * 0.01 * mask * dist_scale`,
 /// then runs the standard vertex pipeline so downstream interpolants stay consistent
-/// with the forward path. The output color is overridden with `_OutlineColor`.
-/// The reference shader used the alpha channel of the color as an indicator
-/// that the vertex is part of an outline or of the main mesh, however
-/// this is not necessary in this implementation thanks to the separate passes.
+/// with the forward path. The output color carries `_OutlineColor.rgb` so vertex-color
+/// albedo variants tint outline surface data consistently; alpha is kept as an outline
+/// shell marker even though Renderide routes outline rendering through a separate pass.
 fn vertex_outline(
     instance_index: u32,
     view_idx: u32,
@@ -54,7 +53,10 @@ fn vertex_outline(
     let dist_scale = min(distance(base_world.xyz, rg::camera_world_pos_for_view(view_idx)) * 3.0, 1.0);
     let outline_width = max(xb::mat._OutlineWidth, 0.0) * 0.01 * mask * dist_scale;
     let outline_pos = vec4<f32>(pos.xyz + xb::safe_normalize(n.xyz, vec3<f32>(0.0, 1.0, 0.0)) * outline_width, 1.0);
-    return xsurf::vertex_main(instance_index, view_idx, outline_pos, n, uv_primary, color, tangent, uv_secondary);
+
+    var out = xsurf::vertex_main(instance_index, view_idx, outline_pos, n, uv_primary, color, tangent, uv_secondary);
+    out.color = vec4<f32>(xb::mat._OutlineColor.rgb, 1.0);
+    return out;
 }
 
 /// Outline fragment shader. Selects between Emissive (flat `_OutlineColor`) and Lit
@@ -105,7 +107,9 @@ fn fragment_outline_for_layout(
     alpha_mode: u32,
     keyword_layout: u32,
 ) -> vec4<f32> {
-    if (front_facing) { discard; } //Discard outlines front face always. This way cull off and outlines can be enabled.
+    if (front_facing) {
+        discard;
+    }
 
     let s = xsurf::sample_surface_for_layout(false, front_facing, world_pos, world_n, world_t, world_b, uv_primary, uv_secondary, color, keyword_layout);
     let alpha = xa::apply_alpha(alpha_mode, frag_pos.xy, world_pos, view_layer, uv_primary, s.albedo.a, s.clip_alpha);

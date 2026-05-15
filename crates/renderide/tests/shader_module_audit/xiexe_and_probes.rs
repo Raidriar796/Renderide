@@ -433,6 +433,23 @@ fn xiexe_static_stems_use_static_vertexlight_keyword_layout() -> io::Result<()> 
 }
 
 #[test]
+fn xiexe_outline_vertex_color_preserves_outline_color_for_vertex_color_albedo() -> io::Result<()> {
+    let outline_src = source_file(manifest_dir().join("shaders/modules/xiexe/toon2/outline.wgsl"))?;
+    assert!(
+        outline_src.contains("out.color = vec4<f32>(xb::mat._OutlineColor.rgb, 1.0);"),
+        "Xiexe outline vertices must pass `_OutlineColor.rgb` through vertex color so vertex-color albedo variants preserve outline tinting"
+    );
+
+    let surface_src = source_file(manifest_dir().join("shaders/modules/xiexe/toon2/surface.wgsl"))?;
+    assert!(
+        surface_src.contains("albedo = vec4<f32>(albedo.rgb * color.rgb, albedo.a);"),
+        "Xiexe surface sampling must continue applying vertex color when the vertex-color albedo keyword is enabled"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn xiexe_a2c_has_single_sample_dither_fallback() -> io::Result<()> {
     let alpha_src = source_file(manifest_dir().join("shaders/modules/xiexe/toon2/alpha.wgsl"))?;
     for required in [
