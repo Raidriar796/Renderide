@@ -10,6 +10,14 @@ pub struct ExperimentalSettings {
     pub reflection_probe_sh2_enabled: bool,
 }
 
+impl Default for ExperimentalSettings {
+    fn default() -> Self {
+        Self {
+            reflection_probe_sh2_enabled: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ExperimentalSettings;

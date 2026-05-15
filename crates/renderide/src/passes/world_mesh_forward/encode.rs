@@ -18,6 +18,7 @@ use super::MaterialBatchPacket;
 use super::depth_prepass::{
     WorldMeshForwardDepthPrepassPipelineCache, WorldMeshForwardDepthPrepassPipelineKey,
 };
+use super::material_batch::MaterialGroup1Binding;
 use super::normal_pass::{WorldMeshForwardNormalPipelineCache, WorldMeshForwardNormalPipelineKey};
 
 use bind_group::{PerDrawSlabBind, bind_per_draw_slab_if_changed};
@@ -249,6 +250,10 @@ fn issue_forward_group(
     let Some(pipelines) = pc.pipelines.as_ref() else {
         return;
     };
+    debug_assert!(
+        pc.resolved_pipeline_kind.is_some(),
+        "material packet with ready pipelines must record the resolved pipeline kind"
+    );
 
     bind_material_packet_if_changed(rpass, resources, state, batch_cursor, pc);
     bind_forward_per_draw_slab(rpass, resources, state, group);
@@ -277,11 +282,20 @@ fn bind_material_packet_if_changed(
     if state.bound_batch_cursor == Some(batch_cursor) {
         return;
     }
-    let material_bg = packet.bind_group.as_deref().unwrap_or(resources.empty_bg);
-    if let Some(offset) = packet.material_uniform_dynamic_offset {
-        rpass.set_bind_group(1, material_bg, &[offset]);
-    } else {
-        rpass.set_bind_group(1, material_bg, &[]);
+    match &packet.group1_binding {
+        MaterialGroup1Binding::Empty => {
+            rpass.set_bind_group(1, resources.empty_bg, &[]);
+        }
+        MaterialGroup1Binding::Embedded {
+            bind_group,
+            uniform_dynamic_offset,
+        } => {
+            if let Some(offset) = uniform_dynamic_offset {
+                rpass.set_bind_group(1, bind_group.as_ref(), &[*offset]);
+            } else {
+                rpass.set_bind_group(1, bind_group.as_ref(), &[]);
+            }
+        }
     }
     state.bound_batch_cursor = Some(batch_cursor);
 }

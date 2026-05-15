@@ -162,7 +162,7 @@ pub(crate) use null_pipeline::NullFamily;
 pub(crate) use pipeline_property_resolver::PipelinePropertyResolver;
 
 /// Shader route table, optional material asset registry, and WGSL composition patches.
-pub(crate) use registry::MaterialRegistry;
+pub(crate) use registry::{MaterialPipelineResolution, MaterialRegistry};
 pub(crate) use router::{MaterialRouter, resolve_raster_pipeline};
 
 /// Static shader feature flags (multiview, etc.) keyed into the pipeline cache.
