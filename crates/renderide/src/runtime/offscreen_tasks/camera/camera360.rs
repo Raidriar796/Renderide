@@ -24,8 +24,9 @@ use crate::shared::{CameraRenderParameters, RenderingContext};
 
 use super::super::super::frame::view_plan::{FrameViewPlan, FrameViewPlanTarget};
 use super::super::cube_capture::{
-    CUBE_FACE_COUNT, CubeCaptureExtent, CubeCaptureFace, CubeCaptureTargetError,
-    CubeCaptureTargets, host_camera_frame_for_cube_face, render_cube_capture_faces_offscreen,
+    CUBE_FACE_COUNT, CubeCaptureBasisMode, CubeCaptureExtent, CubeCaptureFace,
+    CubeCaptureTargetError, CubeCaptureTargets, host_camera_frame_for_cube_face_with_basis,
+    render_cube_capture_faces_offscreen,
 };
 use super::{
     CAMERA_TASK_COLOR_FORMAT, CAMERA_TASK_SAMPLE_COUNT_POLICY, CameraReadbackError,
@@ -33,6 +34,10 @@ use super::{
     alpha_coverage, camera_render_task_post_processing, draw_filter_from_camera_render_task,
     output_byte_count, readback_camera_task_texture, write_camera_task_result,
 };
+
+/// Cubemap orientation mode used by Camera360 before equirectangular projection.
+pub(super) const CAMERA360_CUBE_BASIS_MODE: CubeCaptureBasisMode =
+    CubeCaptureBasisMode::Camera360Copied;
 
 /// Uniforms consumed by the Camera360 cubemap-to-equirect projection pass.
 #[repr(C)]
@@ -173,12 +178,13 @@ fn plan_camera360_task(
         .iter()
         .copied()
         .map(|face| FrameViewPlan {
-            host_camera: host_camera_frame_for_cube_face(
+            host_camera: host_camera_frame_for_cube_face_with_basis(
                 ctx.base_camera,
                 clip,
                 face_viewport,
                 ctx.task.position,
                 face,
+                CAMERA360_CUBE_BASIS_MODE,
             ),
             render_context: RenderingContext::RenderToAsset,
             draw_filter: Some(filter.clone()),

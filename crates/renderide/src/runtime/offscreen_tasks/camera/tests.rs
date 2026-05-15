@@ -1,7 +1,8 @@
 //! Camera render-task readback and packing tests.
 
-use glam::IVec2;
+use glam::{IVec2, Vec3};
 
+use super::super::cube_capture::{CubeCaptureBasisMode, CubeCaptureFace};
 use super::result_write::{output_byte_count, pack_rgba8_to_host_buffer};
 use super::*;
 
@@ -64,6 +65,26 @@ fn camera360_face_size_matches_output_texel_budget() {
         })
         .expect("face size"),
         16
+    );
+}
+
+#[test]
+fn camera360_uses_copied_cubemap_basis_for_face_captures() {
+    assert_eq!(
+        camera360::CAMERA360_CUBE_BASIS_MODE,
+        CubeCaptureBasisMode::Camera360Copied
+    );
+    assert_eq!(
+        CubeCaptureFace::PosY
+            .basis_for(camera360::CAMERA360_CUBE_BASIS_MODE)
+            .right,
+        Vec3::NEG_X
+    );
+    assert_ne!(
+        CubeCaptureFace::PosY
+            .basis_for(camera360::CAMERA360_CUBE_BASIS_MODE)
+            .right,
+        CubeCaptureFace::PosY.basis().right
     );
 }
 

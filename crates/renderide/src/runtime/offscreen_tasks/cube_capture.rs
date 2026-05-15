@@ -82,7 +82,24 @@ impl CubeCaptureFace {
     }
 
     /// World-space orthonormal basis for this face.
+    #[cfg(test)]
     pub(in crate::runtime) const fn basis(self) -> CubeCaptureFaceBasis {
+        self.basis_for(CubeCaptureBasisMode::Canonical)
+    }
+
+    /// World-space orthonormal basis for this face under a capture mode.
+    pub(in crate::runtime) const fn basis_for(
+        self,
+        mode: CubeCaptureBasisMode,
+    ) -> CubeCaptureFaceBasis {
+        match mode {
+            CubeCaptureBasisMode::Canonical => self.canonical_basis(),
+            CubeCaptureBasisMode::Camera360Copied => self.camera360_copied_basis(),
+        }
+    }
+
+    /// Canonical world-space orthonormal basis for this face.
+    const fn canonical_basis(self) -> CubeCaptureFaceBasis {
         match self {
             Self::PosX => CubeCaptureFaceBasis {
                 forward: Vec3::X,
@@ -117,14 +134,70 @@ impl CubeCaptureFace {
         }
     }
 
+    /// Camera360 copied-cubemap world-space orthonormal basis for this face.
+    const fn camera360_copied_basis(self) -> CubeCaptureFaceBasis {
+        match self {
+            Self::PosX => CubeCaptureFaceBasis {
+                forward: Vec3::NEG_X,
+                right: Vec3::Z,
+                up: Vec3::Y,
+            },
+            Self::NegX => CubeCaptureFaceBasis {
+                forward: Vec3::X,
+                right: Vec3::NEG_Z,
+                up: Vec3::Y,
+            },
+            Self::PosY => CubeCaptureFaceBasis {
+                forward: Vec3::NEG_Y,
+                right: Vec3::NEG_X,
+                up: Vec3::NEG_Z,
+            },
+            Self::NegY => CubeCaptureFaceBasis {
+                forward: Vec3::Y,
+                right: Vec3::NEG_X,
+                up: Vec3::Z,
+            },
+            Self::PosZ => CubeCaptureFaceBasis {
+                forward: Vec3::NEG_Z,
+                right: Vec3::NEG_X,
+                up: Vec3::Y,
+            },
+            Self::NegZ => CubeCaptureFaceBasis {
+                forward: Vec3::Z,
+                right: Vec3::X,
+                up: Vec3::Y,
+            },
+        }
+    }
+
     /// Direction through a normalized face UV coordinate.
     #[cfg(test)]
     pub(in crate::runtime) fn direction_for_uv(self, u: f32, v: f32) -> Vec3 {
+        self.direction_for_uv_with_basis(CubeCaptureBasisMode::Canonical, u, v)
+    }
+
+    /// Direction through a normalized face UV coordinate under a capture mode.
+    #[cfg(test)]
+    pub(in crate::runtime) fn direction_for_uv_with_basis(
+        self,
+        mode: CubeCaptureBasisMode,
+        u: f32,
+        v: f32,
+    ) -> Vec3 {
         let x = 2.0 * u - 1.0;
         let y = 1.0 - 2.0 * v;
-        let basis = self.basis();
+        let basis = self.basis_for(mode);
         (basis.forward + basis.right * x + basis.up * y).normalize()
     }
+}
+
+/// Cubemap face orientation mode for captures that share the same face storage order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum CubeCaptureBasisMode {
+    /// Canonical cubemap orientation used by reflection probes and renderer-owned cube assets.
+    Canonical,
+    /// Camera360 copied-cubemap orientation used before equirectangular projection.
+    Camera360Copied,
 }
 
 /// World-space orthonormal basis for one cubemap face.
@@ -342,9 +415,13 @@ pub(in crate::runtime) fn face_view_desc(
     }
 }
 
-/// Builds a world matrix oriented toward one cubemap face.
-pub(in crate::runtime) fn cube_face_world_matrix(position: Vec3, face: CubeCaptureFace) -> Mat4 {
-    let basis = face.basis();
+/// Builds a world matrix oriented toward one cubemap face under a capture mode.
+pub(in crate::runtime) fn cube_face_world_matrix_for_basis(
+    position: Vec3,
+    face: CubeCaptureFace,
+    mode: CubeCaptureBasisMode,
+) -> Mat4 {
+    let basis = face.basis_for(mode);
     Mat4::from_cols(
         basis.right.extend(0.0),
         basis.up.extend(0.0),
@@ -361,7 +438,26 @@ pub(in crate::runtime) fn host_camera_frame_for_cube_face(
     position: Vec3,
     face: CubeCaptureFace,
 ) -> HostCameraFrame {
-    let world_matrix = cube_face_world_matrix(position, face);
+    host_camera_frame_for_cube_face_with_basis(
+        base,
+        clip,
+        viewport_px,
+        position,
+        face,
+        CubeCaptureBasisMode::Canonical,
+    )
+}
+
+/// Builds a host camera frame for rendering one cubemap face under a capture mode.
+pub(in crate::runtime) fn host_camera_frame_for_cube_face_with_basis(
+    base: &HostCameraFrame,
+    clip: CameraClipPlanes,
+    viewport_px: (u32, u32),
+    position: Vec3,
+    face: CubeCaptureFace,
+    mode: CubeCaptureBasisMode,
+) -> HostCameraFrame {
+    let world_matrix = cube_face_world_matrix_for_basis(position, face, mode);
     let pose = CameraPose::from_world_matrix(world_matrix);
     let viewport = Viewport::from_tuple(viewport_px);
     HostCameraFrame {
@@ -424,9 +520,18 @@ mod tests {
     use super::*;
 
     fn matrix_direction_for_uv(face: CubeCaptureFace, u: f32, v: f32) -> Vec3 {
+        matrix_direction_for_uv_with_basis(face, CubeCaptureBasisMode::Canonical, u, v)
+    }
+
+    fn matrix_direction_for_uv_with_basis(
+        face: CubeCaptureFace,
+        mode: CubeCaptureBasisMode,
+        u: f32,
+        v: f32,
+    ) -> Vec3 {
         let x = 2.0 * u - 1.0;
         let y = 1.0 - 2.0 * v;
-        cube_face_world_matrix(Vec3::ZERO, face)
+        cube_face_world_matrix_for_basis(Vec3::ZERO, face, mode)
             .transform_vector3(Vec3::new(x, y, 1.0))
             .normalize()
     }
@@ -464,14 +569,51 @@ mod tests {
 
     #[test]
     fn cubemap_face_basis_vectors_are_orthonormal() {
-        for face in CubeCaptureFace::ALL {
-            let basis = face.basis();
-            assert!((basis.forward.length() - 1.0).abs() < 1e-6);
-            assert!((basis.right.length() - 1.0).abs() < 1e-6);
-            assert!((basis.up.length() - 1.0).abs() < 1e-6);
-            assert!(basis.forward.dot(basis.right).abs() < 1e-6);
-            assert!(basis.forward.dot(basis.up).abs() < 1e-6);
-            assert!(basis.right.dot(basis.up).abs() < 1e-6);
+        for mode in [
+            CubeCaptureBasisMode::Canonical,
+            CubeCaptureBasisMode::Camera360Copied,
+        ] {
+            for face in CubeCaptureFace::ALL {
+                let basis = face.basis_for(mode);
+                assert!((basis.forward.length() - 1.0).abs() < 1e-6);
+                assert!((basis.right.length() - 1.0).abs() < 1e-6);
+                assert!((basis.up.length() - 1.0).abs() < 1e-6);
+                assert!(basis.forward.dot(basis.right).abs() < 1e-6);
+                assert!(basis.forward.dot(basis.up).abs() < 1e-6);
+                assert!(basis.right.dot(basis.up).abs() < 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn camera360_copied_face_basis_matches_custom_capture_rotations() {
+        let expected = [
+            (CubeCaptureFace::PosX, Vec3::NEG_X, Vec3::Z, Vec3::Y),
+            (CubeCaptureFace::NegX, Vec3::X, Vec3::NEG_Z, Vec3::Y),
+            (CubeCaptureFace::PosY, Vec3::NEG_Y, Vec3::NEG_X, Vec3::NEG_Z),
+            (CubeCaptureFace::NegY, Vec3::Y, Vec3::NEG_X, Vec3::Z),
+            (CubeCaptureFace::PosZ, Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y),
+            (CubeCaptureFace::NegZ, Vec3::Z, Vec3::X, Vec3::Y),
+        ];
+
+        for (face, forward, right, up) in expected {
+            let basis = face.basis_for(CubeCaptureBasisMode::Camera360Copied);
+            assert_eq!(basis.forward, forward);
+            assert_eq!(basis.right, right);
+            assert_eq!(basis.up, up);
+        }
+    }
+
+    #[test]
+    fn camera360_copied_top_bottom_faces_are_not_canonical_y_faces() {
+        for face in [CubeCaptureFace::PosY, CubeCaptureFace::NegY] {
+            let canonical = face.basis_for(CubeCaptureBasisMode::Canonical);
+            let camera360 = face.basis_for(CubeCaptureBasisMode::Camera360Copied);
+
+            assert_eq!(camera360.right, Vec3::NEG_X);
+            assert_ne!(camera360.forward, canonical.forward);
+            assert_ne!(camera360.right, canonical.right);
+            assert_eq!(camera360.up, canonical.up);
         }
     }
 
@@ -484,6 +626,27 @@ mod tests {
             for (u, v) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
                 let actual = matrix_direction_for_uv(face, u, v);
                 let expected = face.direction_for_uv(u, v);
+                assert!(
+                    (actual - expected).length() < 1e-6,
+                    "{face:?} uv=({u}, {v}) actual={actual:?} expected={expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn camera360_copied_world_matrices_match_copied_directions() {
+        let mode = CubeCaptureBasisMode::Camera360Copied;
+        for face in CubeCaptureFace::ALL {
+            assert!(
+                (matrix_direction_for_uv_with_basis(face, mode, 0.5, 0.5)
+                    - face.basis_for(mode).forward)
+                    .length()
+                    < 1e-6
+            );
+            for (u, v) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+                let actual = matrix_direction_for_uv_with_basis(face, mode, u, v);
+                let expected = face.direction_for_uv_with_basis(mode, u, v);
                 assert!(
                     (actual - expected).length() < 1e-6,
                     "{face:?} uv=({u}, {v}) actual={actual:?} expected={expected:?}"
