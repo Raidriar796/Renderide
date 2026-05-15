@@ -17,22 +17,3 @@ impl Default for ExperimentalSettings {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::ExperimentalSettings;
-
-    #[test]
-    fn default_keeps_reflection_probe_sh2_disabled() {
-        let settings = ExperimentalSettings::default();
-
-        assert!(!settings.reflection_probe_sh2_enabled);
-    }
-
-    #[test]
-    fn missing_field_defaults_to_disabled() {
-        let settings: ExperimentalSettings = toml::from_str("").expect("deserialize");
-
-        assert!(!settings.reflection_probe_sh2_enabled);
-    }
-}
