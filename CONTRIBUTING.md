@@ -176,14 +176,14 @@ The .NET solution is built and tested by its own CI workflow (see [2.9](#29-cont
 | `crates/` | The Rust workspace member crates. |
 | `generators/` | The C# code generator and its tests. |
 | `RenderideMod/` | The C# Resonite mod. |
-| `third_party/` | Vendored native libraries. Currently holds the OpenXR loader, which the renderer's build script copies onto Windows targets so the loader is available next to the binary. |
+| `third_party/` | Vendored native libraries. Currently holds the OpenXR loader, which the renderer's build script copies onto Windows and macOS targets so the loader is available next to the binary. |
 | `.github/workflows/` | Continuous integration pipelines. |
 
 Inside the renderer crate at `crates/renderide/`, three top-level companions live next to `src/`:
 
 - `assets/` holds runtime assets that ship with the renderer: the window icon (`ResoniteLogo.png`) and the OpenXR controller binding profiles under `xr/bindings/` for every supported headset and controller family. The build script copies these into the artifact directory so the binary can find them at run time.
 - `shaders/` holds every WGSL source file the renderer compiles. It is divided into `materials/` (one shader per host material program), `modules/` (shared logic composed via naga-oil), and `passes/` with subdirectories for `backend/`, `compute/`, `post/`, and `present/` shaders.
-- `build.rs` and `build_support/` together compose the WGSL source tree at build time, generate an embedded shader registry that the renderer links in, copy XR assets into the artifact directory, and copy the vendored OpenXR loader on Windows. The `build_support/shader/` subdirectory is where the shader composition logic lives, broken into `source`, `modules`, `compose`, `directives`, `validation`, `parallel`, `emit`, `model`, and `error`.
+- `build.rs` and `build_support/` together compose the WGSL source tree at build time, generate an embedded shader registry that the renderer links in, copy XR assets into the artifact directory, and copy the vendored OpenXR loader on Windows and macOS. The `build_support/shader/` subdirectory is where the shader composition logic lives, broken into `source`, `modules`, `compose`, `directives`, `validation`, `parallel`, `emit`, `model`, and `error`.
 
 ### 2.4 Build profiles and feature flags
 
@@ -604,7 +604,7 @@ OpenXR support lives in `crates/renderide/src/xr/`. It is structured around seve
 - `swapchain.rs` owns the XR swapchain images and view geometry.
 - `input/` converts OpenXR action state into the same `InputState` shape that winit input is converted into.
 - `host_camera_sync.rs` keeps the host's notion of camera in sync with the headset pose.
-- `openxr_loader_paths.rs` and the vendored loader under `third_party/openxr_loader/` ensure the loader can be found at run time, especially on Windows where the build script copies the vendored DLL next to the binary.
+- `openxr_loader_paths.rs` and the vendored loader under `third_party/openxr_loader/` ensure the loader can be found at run time, especially on Windows and macOS where the build script copies the vendored loader next to the binary.
 - `debug_utils.rs` wires up OpenXR debug callbacks for diagnostics.
 
 The `HeadOutputDevice` adapter that bridges the host's notion of an output device to the XR present path now lives on the frontend side, as `frontend/output_device`, so the OpenXR layer can stay focused on session and swapchain concerns.

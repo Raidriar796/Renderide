@@ -1,13 +1,18 @@
-//! Vendored OpenXR loader copying for Windows build artifacts.
+//! Vendored OpenXR loader copying for build artifacts.
 //!
-//! For `windows` targets, copies **one** `openxr_loader.dll` from
-//! `../../third_party/openxr_loader/openxr_loader_windows-*/` matching `CARGO_CFG_TARGET_ARCH`
-//! into the same artifact directory Cargo uses for this build: `target/<PROFILE>/` when `TARGET`
-//! equals `HOST`, and `target/<TARGET>/<PROFILE>/` when cross-compiling (`--target`).
-//! Non-Windows targets skip this (Linux uses the system loader at run time).
+//! For `windows` targets, copies one `openxr_loader.dll` from
+//! `../../third_party/openxr_loader/openxr_loader_windows-*/` matching `CARGO_CFG_TARGET_ARCH`.
+//! For `macos` targets, copies one `libopenxr_loader.dylib` from
+//! `../../third_party/openxr_loader/openxr_loader_macos-*/`.
+//!
+//! The destination is derived from `OUT_DIR`, not `PROFILE`, so custom profiles that inherit from
+//! `dev` place the loader next to the binary under `target/<profile-dir>/`.
+//! Unsupported targets skip this (Linux uses the system loader at run time).
 
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use super::artifacts::artifact_dir_from_out_dir;
 
 /// Khronos `openxr_loader_windows-*` subfolder names for each Rust target arch.
 mod openxr_win {
@@ -17,8 +22,29 @@ mod openxr_win {
     ));
 }
 
-/// Picks the lexicographically last `openxr_loader_windows-*` directory so newer SDK versions win.
-fn find_latest_openxr_windows_package_dir(third_party_openxr: &Path) -> Option<PathBuf> {
+/// Returns the vendored loader filename for the requested target OS.
+pub(crate) fn openxr_loader_library_filename(target_os: &str) -> Option<&'static str> {
+    match target_os {
+        "windows" => Some("openxr_loader.dll"),
+        "macos" => Some("libopenxr_loader.dylib"),
+        _ => None,
+    }
+}
+
+/// Returns the vendored loader package directory prefix for the requested target OS.
+fn openxr_loader_package_prefix(target_os: &str) -> Option<&'static str> {
+    match target_os {
+        "windows" => Some("openxr_loader_windows-"),
+        "macos" => Some("openxr_loader_macos-"),
+        _ => None,
+    }
+}
+
+/// Picks the lexicographically last matching package directory so newer SDK versions win.
+fn find_latest_openxr_package_dir(
+    third_party_openxr: &Path,
+    package_prefix: &str,
+) -> Option<PathBuf> {
     let rd = fs::read_dir(third_party_openxr).ok()?;
     let mut candidates: Vec<PathBuf> = rd
         .filter_map(Result::ok)
@@ -27,91 +53,111 @@ fn find_latest_openxr_windows_package_dir(third_party_openxr: &Path) -> Option<P
             p.is_dir()
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("openxr_loader_windows-"))
+                    .is_some_and(|n| n.starts_with(package_prefix))
         })
         .collect();
     candidates.sort();
     candidates.into_iter().next_back()
 }
 
-/// Directory where Cargo places binaries for the current package build (`renderide.exe`, etc.).
-///
-/// Cargo uses `target/<PROFILE>/` for the default host target and `target/<TARGET>/<PROFILE>/` when
-/// `--target` selects a different triple; copying the loader only to `target/<PROFILE>/` misses
-/// cross-compiled outputs (e.g. `x86_64-pc-windows-gnu`).
-fn cargo_artifact_profile_dir(cargo_target_dir: &Path, profile: &str) -> Option<PathBuf> {
-    let target = std::env::var("TARGET").ok()?;
-    let host = std::env::var("HOST").ok()?;
-    if target == host {
-        Some(cargo_target_dir.join(profile))
+/// Resolves the source path for a vendored OpenXR loader package.
+pub(crate) fn vendored_openxr_loader_source(
+    third_party_openxr: &Path,
+    target_os: &str,
+    arch: Option<&str>,
+) -> Option<PathBuf> {
+    let package_prefix = openxr_loader_package_prefix(target_os)?;
+    let library_filename = openxr_loader_library_filename(target_os)?;
+    let pkg_root = find_latest_openxr_package_dir(third_party_openxr, package_prefix)?;
+
+    if target_os == "windows" {
+        let subdir = openxr_win::khronos_windows_subdir_for_arch(arch?)?;
+        Some(pkg_root.join(subdir).join(library_filename))
     } else {
-        Some(cargo_target_dir.join(target).join(profile))
+        Some(pkg_root.join(library_filename))
     }
 }
 
-/// Copies the Khronos `OpenXR` loader DLL next to the build output for Windows targets only.
-pub fn copy_vendored_openxr_loader_windows(manifest_dir: &Path) {
+/// Resolves the destination path next to the build artifact for the requested target OS.
+pub(crate) fn openxr_loader_destination_path(out_dir: &Path, target_os: &str) -> Option<PathBuf> {
+    let library_filename = openxr_loader_library_filename(target_os)?;
+    Some(artifact_dir_from_out_dir(out_dir)?.join(library_filename))
+}
+
+/// Copies the Khronos `OpenXR` loader next to the build output for supported vendored targets.
+pub fn copy_vendored_openxr_loader(manifest_dir: &Path, out_dir: &Path) {
     let Ok(target_os) = std::env::var("CARGO_CFG_TARGET_OS") else {
         return;
     };
-    if target_os != "windows" {
-        return;
+    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").ok();
+    copy_vendored_openxr_loader_for_target(manifest_dir, out_dir, &target_os, arch.as_deref());
+}
+
+/// Copies the vendored loader for an explicit target OS and architecture.
+///
+/// Returns `true` when a loader was copied. Unsupported targets and missing package files return
+/// `false` after emitting Cargo warnings where appropriate.
+pub(crate) fn copy_vendored_openxr_loader_for_target(
+    manifest_dir: &Path,
+    out_dir: &Path,
+    target_os: &str,
+    arch: Option<&str>,
+) -> bool {
+    if openxr_loader_library_filename(target_os).is_none() {
+        return false;
     }
-
-    let Ok(arch) = std::env::var("CARGO_CFG_TARGET_ARCH") else {
-        println!("cargo:warning=openxr_loader: CARGO_CFG_TARGET_ARCH unset");
-        return;
-    };
-
-    let Some(subdir) = openxr_win::khronos_windows_subdir_for_arch(&arch) else {
-        println!("cargo:warning=openxr_loader: no vendored Khronos folder for target arch {arch}");
-        return;
-    };
-
     let workspace_dir = manifest_dir.join("../..");
     let third_party = workspace_dir.join("third_party/openxr_loader");
     println!("cargo:rerun-if-changed={}", third_party.display());
 
-    let Some(pkg_root) = find_latest_openxr_windows_package_dir(&third_party) else {
+    if target_os == "windows" && arch.is_none() {
+        println!("cargo:warning=openxr_loader: CARGO_CFG_TARGET_ARCH unset");
+        return false;
+    }
+
+    let Some(src) = vendored_openxr_loader_source(&third_party, target_os, arch) else {
+        let package_prefix = openxr_loader_package_prefix(target_os).unwrap_or("openxr_loader_");
         println!(
-            "cargo:warning=openxr_loader: no openxr_loader_windows-* under {}",
+            "cargo:warning=openxr_loader: no usable {package_prefix}* package under {}",
             third_party.display()
         );
-        return;
+        return false;
     };
-
-    let src = pkg_root.join(subdir).join("openxr_loader.dll");
     println!("cargo:rerun-if-changed={}", src.display());
 
     if !src.exists() {
         println!(
-            "cargo:warning=openxr_loader: missing vendored DLL at {}",
+            "cargo:warning=openxr_loader: missing vendored loader at {}",
             src.display()
         );
-        return;
+        return false;
     }
 
-    let cargo_target_dir = std::env::var("CARGO_TARGET_DIR")
-        .map_or_else(|_| manifest_dir.join("../../target"), PathBuf::from);
-    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
-
-    let Some(dest_dir) = cargo_artifact_profile_dir(&cargo_target_dir, &profile) else {
-        println!("cargo:warning=openxr_loader: TARGET/HOST unset");
-        return;
+    let Some(dest) = openxr_loader_destination_path(out_dir, target_os) else {
+        println!("cargo:warning=openxr_loader: cannot derive artifact dir from OUT_DIR");
+        return false;
     };
-    if let Err(e) = fs::create_dir_all(&dest_dir) {
+    let Some(dest_dir) = dest.parent() else {
+        println!(
+            "cargo:warning=openxr_loader: destination {} has no parent",
+            dest.display()
+        );
+        return false;
+    };
+    if let Err(e) = fs::create_dir_all(dest_dir) {
         println!(
             "cargo:warning=openxr_loader: mkdir {} failed: {e}",
             dest_dir.display()
         );
-        return;
+        return false;
     }
-    let dest = dest_dir.join("openxr_loader.dll");
     if let Err(e) = fs::copy(&src, &dest) {
         println!(
             "cargo:warning=openxr_loader: copy {} -> {} failed: {e}",
             src.display(),
             dest.display()
         );
+        return false;
     }
+    true
 }
