@@ -196,26 +196,36 @@ impl RenderTarget {
             RenderTargetMode::Openxr { session } => {
                 let quiesced = poll_openxr_shutdown(&mut session.handles.xr_session, shutdown);
                 if quiesced {
-                    // Drain in-flight GPU work that may still reference OpenXR swapchain
-                    // images before either wgpu or the runtime tears them down.
-                    // `wait_for_previous_present` only covers the desktop mirror; the
-                    // headset swapchain needs an explicit device-wide wait so any
-                    // submission that touched a `VkImage` from `XrStereoSwapchain` has
-                    // retired before `xrDestroySwapchain` runs. Bounded so a stuck driver
-                    // cannot hold up the rest of the teardown sequence.
-                    let poll_type = wgpu::PollType::Wait {
-                        submission_index: None,
-                        timeout: Some(GPU_SHUTDOWN_POLL_TIMEOUT),
-                    };
-                    if let Err(error) = self.gpu.device().poll(poll_type) {
-                        logger::warn!(
-                            "OpenXR shutdown: device poll(Wait) failed before swapchain teardown: {error:?}"
-                        );
-                    }
+                    poll_gpu_for_openxr_swapchain_shutdown(&self.gpu);
                 }
                 quiesced
             }
         }
+    }
+}
+
+/// Returns whether shutdown should drain device work before OpenXR swapchain teardown.
+fn should_poll_gpu_for_openxr_shutdown(device_lost: bool) -> bool {
+    !device_lost
+}
+
+/// Drains GPU work that may still reference OpenXR swapchain images before session teardown.
+fn poll_gpu_for_openxr_swapchain_shutdown(gpu: &GpuContext) {
+    if !should_poll_gpu_for_openxr_shutdown(gpu.device_lost()) {
+        logger::warn!(
+            "OpenXR shutdown: skipping device poll(Wait) because the wgpu device is already lost"
+        );
+        return;
+    }
+
+    let poll_type = wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: Some(GPU_SHUTDOWN_POLL_TIMEOUT),
+    };
+    if let Err(error) = gpu.device().poll(poll_type) {
+        logger::warn!(
+            "OpenXR shutdown: device poll(Wait) failed before swapchain teardown: {error:?}"
+        );
     }
 }
 
@@ -247,6 +257,21 @@ fn poll_openxr_shutdown(
         logger::warn!("OpenXR shutdown poll_events after request_exit failed: {error:?}");
     }
     xr_session.shutdown_quiesced()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_poll_gpu_for_openxr_shutdown;
+
+    #[test]
+    fn openxr_shutdown_polls_gpu_while_device_is_healthy() {
+        assert!(should_poll_gpu_for_openxr_shutdown(false));
+    }
+
+    #[test]
+    fn openxr_shutdown_skips_gpu_poll_after_device_loss() {
+        assert!(!should_poll_gpu_for_openxr_shutdown(true));
+    }
 }
 
 fn create_main_window(

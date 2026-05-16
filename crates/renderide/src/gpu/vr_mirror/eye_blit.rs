@@ -12,6 +12,9 @@ use crate::gpu::driver_thread::XrFinalizeWork;
 use super::pipelines::eye_pipeline;
 use super::resources::VrMirrorBlitResources;
 
+/// Label for the no-op pass that restores the sampled OpenXR layer to color-attachment layout.
+const XR_RELEASE_RESTORE_PASS_LABEL: &str = "vr_mirror_eye_restore_xr_release_layout";
+
 impl VrMirrorBlitResources {
     /// Copies the acquired swapchain eye layer into the staging texture, submits GPU work,
     /// and attaches an OpenXR finalize payload so the driver thread can release the swapchain
@@ -103,6 +106,7 @@ impl VrMirrorBlitResources {
             prof.end_query(&mut encoder, query);
             prof.resolve_queries(&mut encoder);
         }
+        encode_xr_release_layout_restore_pass(&mut encoder, source_layer_view);
 
         let command_buffer = {
             profiling::scope!("CommandEncoder::finish::vr_mirror_eye");
@@ -117,5 +121,55 @@ impl VrMirrorBlitResources {
             }
         }
         self.mark_staging_valid();
+    }
+}
+
+/// Returns the color attachment operations used to restore OpenXR swapchain image layout.
+fn xr_release_restore_ops() -> wgpu::Operations<wgpu::Color> {
+    wgpu::Operations {
+        load: wgpu::LoadOp::Load,
+        store: wgpu::StoreOp::Store,
+    }
+}
+
+/// Encodes a no-op color pass so `xrReleaseSwapchainImage` receives a color-attachment layout.
+fn encode_xr_release_layout_restore_pass(
+    encoder: &mut wgpu::CommandEncoder,
+    source_layer_view: &wgpu::TextureView,
+) {
+    profiling::scope!("vr::mirror_restore_xr_release_layout");
+    {
+        let _restore_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(XR_RELEASE_RESTORE_PASS_LABEL),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: source_layer_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: xr_release_restore_ops(),
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+        });
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{XR_RELEASE_RESTORE_PASS_LABEL, xr_release_restore_ops};
+
+    #[test]
+    fn xr_release_restore_pass_preserves_contents() {
+        let ops = xr_release_restore_ops();
+
+        assert_eq!(ops.load, wgpu::LoadOp::Load);
+        assert_eq!(ops.store, wgpu::StoreOp::Store);
+    }
+
+    #[test]
+    fn xr_release_restore_pass_label_identifies_layout_restore() {
+        assert!(XR_RELEASE_RESTORE_PASS_LABEL.contains("restore"));
+        assert!(XR_RELEASE_RESTORE_PASS_LABEL.contains("release"));
     }
 }
