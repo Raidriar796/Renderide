@@ -6,6 +6,7 @@
 //! Also hosts the cooperative renderer hang/hitch detector ([`Watchdog`]).
 
 pub(crate) mod crash_context;
+pub(crate) mod gpu_flight_recorder;
 mod hud;
 pub(crate) mod log_once;
 pub(crate) mod log_throttle;

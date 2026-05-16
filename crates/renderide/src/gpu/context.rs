@@ -25,6 +25,7 @@ use super::limits::{GpuLimits, GpuLimitsError};
 use super::submission_state::GpuSubmissionState;
 use super::sync::device_health::GpuDeviceHealth;
 use super::sync::mapped_buffer_health::GpuMappedBufferHealth;
+use crate::diagnostics::gpu_flight_recorder::{GpuFlightEventKind, GpuFlightRecorder};
 use mapped_buffer_recovery::MappedBufferRecoveryFrame;
 use thiserror::Error;
 use winit::window::Window;
@@ -67,6 +68,8 @@ pub struct GpuContext {
     mapped_buffer_recovery: mapped_buffer_recovery::GpuMappedBufferRecovery,
     /// Shared fatal device-loss state set by wgpu callbacks.
     device_health: Arc<GpuDeviceHealth>,
+    /// Recent GPU/XR lifecycle events retained in memory for crash-path dumps.
+    flight_recorder: Arc<GpuFlightRecorder>,
     /// Last device-loss generation observed by the app frame loop.
     seen_device_lost_generation: u64,
     /// Kept as `'static` so the context can move independently of the window borrow; the window
@@ -208,6 +211,30 @@ impl GpuContext {
     /// Whether the active `wgpu::Device` has been reported lost.
     pub(crate) fn device_lost(&self) -> bool {
         self.device_health.is_lost()
+    }
+
+    /// Records one GPU/XR diagnostic event in the in-memory flight recorder.
+    pub(crate) fn record_gpu_flight_event(&self, kind: GpuFlightEventKind) {
+        self.flight_recorder.record(kind);
+    }
+
+    /// Shared in-memory GPU/XR flight recorder.
+    pub(crate) fn gpu_flight_recorder(&self) -> &Arc<GpuFlightRecorder> {
+        &self.flight_recorder
+    }
+
+    /// Dumps recent GPU/XR events once on a crash path.
+    pub(crate) fn dump_gpu_flight_recorder_once(&self, reason: &'static str) -> bool {
+        self.flight_recorder.dump_once(reason)
+    }
+
+    /// Records that the app has observed a device-loss generation.
+    pub(crate) fn record_device_loss_observed(&self, generation: u64) {
+        self.record_gpu_flight_event(GpuFlightEventKind::DeviceLossObserved {
+            generation,
+            adapter_name: self.adapter_info.name.clone(),
+            backend: self.adapter_info.backend,
+        });
     }
 
     /// Returns a newly observed device-loss generation once.

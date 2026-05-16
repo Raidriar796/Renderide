@@ -3,6 +3,10 @@
 //! Serves as the minimal integration test for surface acquire, encoder submission, and present.
 //! The render graph reuses [`acquire_surface_outcome_traced`] and [`record_swapchain_clear_pass`].
 
+use crate::diagnostics::gpu_flight_recorder::{
+    GpuFlightEventKind, GpuFlightSurfaceAcquireOutcome, GpuFlightSurfaceSite,
+    GpuFlightSurfaceStatus, GpuFlightSurfaceSubmitSite,
+};
 use crate::gpu::GpuContext;
 
 /// Clear color used for the skeleton swapchain clear.
@@ -90,6 +94,28 @@ pub enum SurfaceSubmitTrace {
     Desktop,
 }
 
+impl From<SurfaceAcquireTrace> for GpuFlightSurfaceSite {
+    fn from(trace: SurfaceAcquireTrace) -> Self {
+        match trace {
+            SurfaceAcquireTrace::DesktopGraph => Self::DesktopGraph,
+            SurfaceAcquireTrace::VrMirror => Self::VrMirror,
+            SurfaceAcquireTrace::VrClear => Self::VrClear,
+            SurfaceAcquireTrace::ClearFallback => Self::ClearFallback,
+        }
+    }
+}
+
+impl From<SurfaceSubmitTrace> for GpuFlightSurfaceSubmitSite {
+    fn from(trace: SurfaceSubmitTrace) -> Self {
+        match trace {
+            SurfaceSubmitTrace::Desktop => Self::Desktop,
+            SurfaceSubmitTrace::VrMirror => Self::VrMirror,
+            SurfaceSubmitTrace::VrClear => Self::VrClear,
+            SurfaceSubmitTrace::ClearFallback => Self::ClearFallback,
+        }
+    }
+}
+
 /// Acquires the next surface texture with the same policy as [`present_clear_frame`].
 ///
 /// Uses the window stored inside `gpu` for surface recovery, so callers do not need to thread
@@ -126,7 +152,7 @@ pub fn acquire_surface_outcome_traced(
     gpu: &mut GpuContext,
     trace: SurfaceAcquireTrace,
 ) -> Result<SurfaceFrameOutcome, PresentClearError> {
-    match trace {
+    let outcome = match trace {
         SurfaceAcquireTrace::DesktopGraph => {
             profiling::scope!("gpu::surface_acquire.desktop_graph");
             acquire_surface_outcome(gpu)
@@ -143,7 +169,21 @@ pub fn acquire_surface_outcome_traced(
             profiling::scope!("gpu::surface_acquire.clear_fallback");
             acquire_surface_outcome(gpu)
         }
-    }
+    };
+    let flight_outcome = match &outcome {
+        Ok(SurfaceFrameOutcome::Acquired(_)) => GpuFlightSurfaceAcquireOutcome::Acquired,
+        Ok(SurfaceFrameOutcome::Skip) => GpuFlightSurfaceAcquireOutcome::Skipped,
+        Ok(SurfaceFrameOutcome::Reconfigured) => GpuFlightSurfaceAcquireOutcome::Reconfigured,
+        Err(error) => GpuFlightSurfaceAcquireOutcome::Failed(surface_status(&error.status)),
+    };
+    let (width, height) = gpu.surface_extent_px();
+    gpu.record_gpu_flight_event(GpuFlightEventKind::SurfaceAcquire {
+        site: trace.into(),
+        outcome: flight_outcome,
+        extent: (width, height),
+        present_mode: gpu.present_mode(),
+    });
+    outcome
 }
 
 /// Submits command buffers with a presentable surface texture under a source-specific Tracy scope.
@@ -153,6 +193,12 @@ pub fn submit_surface_frame_traced(
     frame: wgpu::SurfaceTexture,
     trace: SurfaceSubmitTrace,
 ) {
+    let command_buffer_count = command_buffers.len();
+    gpu.record_gpu_flight_event(GpuFlightEventKind::SurfaceSubmit {
+        site: trace.into(),
+        command_buffers: command_buffer_count,
+        frame_seq: 0,
+    });
     match trace {
         SurfaceSubmitTrace::VrMirror => {
             profiling::scope!("gpu::surface_submit.vr_mirror");
@@ -169,6 +215,20 @@ pub fn submit_surface_frame_traced(
         SurfaceSubmitTrace::Desktop => {
             profiling::scope!("gpu::surface_submit.desktop");
             gpu.submit_frame_batch(command_buffers, Some(frame), None);
+        }
+    }
+}
+
+/// Converts a current-surface texture status into a copyable diagnostic status.
+fn surface_status(status: &wgpu::CurrentSurfaceTexture) -> GpuFlightSurfaceStatus {
+    match status {
+        wgpu::CurrentSurfaceTexture::Timeout => GpuFlightSurfaceStatus::Timeout,
+        wgpu::CurrentSurfaceTexture::Occluded => GpuFlightSurfaceStatus::Occluded,
+        wgpu::CurrentSurfaceTexture::Outdated => GpuFlightSurfaceStatus::Outdated,
+        wgpu::CurrentSurfaceTexture::Lost => GpuFlightSurfaceStatus::Lost,
+        wgpu::CurrentSurfaceTexture::Validation => GpuFlightSurfaceStatus::Validation,
+        wgpu::CurrentSurfaceTexture::Success(_) | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
+            GpuFlightSurfaceStatus::Validation
         }
     }
 }

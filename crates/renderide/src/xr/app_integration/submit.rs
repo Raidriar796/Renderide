@@ -4,6 +4,9 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::diagnostics::gpu_flight_recorder::{
+    GpuFlightCallResult, GpuFlightEventKind, GpuFlightOpenXrCall,
+};
 use crate::diagnostics::log_throttle::LogThrottle;
 use crate::gpu::driver_thread::BlockingCallWatchdog as EndFrameWatchdog;
 use crate::gpu::{GpuContext, VR_MIRROR_EYE_LAYER};
@@ -223,6 +226,12 @@ fn acquire_imported_hmd_image(
         match acquire_swapchain_image(gpu, &sc.handle) {
             Ok(i) => i,
             Err(e) => {
+                gpu.record_gpu_flight_event(GpuFlightEventKind::OpenXrCall {
+                    call: GpuFlightOpenXrCall::AcquireImage,
+                    result: GpuFlightCallResult::failed_debug(e),
+                    image_index: None,
+                    predicted_display_time_nanos: None,
+                });
                 log_hmd_submit_failure_with_error(HmdSubmitSkipReason::SwapchainAcquireFailed, e);
                 return None;
             }
@@ -285,13 +294,22 @@ fn acquire_swapchain_image(
     swapchain: &Mutex<xr::Swapchain<xr::Vulkan>>,
 ) -> Result<usize, xr::sys::Result> {
     let _gate = gpu.gpu_queue_access_gate().lock();
-    swapchain
+    let result = swapchain
         .lock()
         .acquire_image()
         .inspect_err(|e| {
             logger::warn!("OpenXR swapchain acquire_image failed: {e:?}");
         })
-        .map(|i| i as usize)
+        .map(|i| i as usize);
+    if let Ok(image_index) = &result {
+        gpu.record_gpu_flight_event(GpuFlightEventKind::OpenXrCall {
+            call: GpuFlightOpenXrCall::AcquireImage,
+            result: GpuFlightCallResult::Ok,
+            image_index: Some(*image_index as u32),
+            predicted_display_time_nanos: None,
+        });
+    }
+    result
 }
 
 /// Releases one OpenXR swapchain image while holding the shared Vulkan queue access gate.
@@ -304,9 +322,20 @@ fn release_swapchain_image(
     swapchain: &Mutex<xr::Swapchain<xr::Vulkan>>,
 ) -> Result<(), xr::sys::Result> {
     let _gate = gpu.gpu_queue_access_gate().lock();
-    swapchain.lock().release_image().inspect_err(|e| {
+    let result = swapchain.lock().release_image().inspect_err(|e| {
         logger::warn!("OpenXR swapchain release_image failed: {e:?}");
-    })
+    });
+    let flight_result = result.as_ref().map_or_else(
+        |error| GpuFlightCallResult::failed_debug(*error),
+        |()| GpuFlightCallResult::Ok,
+    );
+    gpu.record_gpu_flight_event(GpuFlightEventKind::OpenXrCall {
+        call: GpuFlightOpenXrCall::ReleaseImage,
+        result: flight_result,
+        image_index: None,
+        predicted_display_time_nanos: None,
+    });
+    result
 }
 
 /// Waits for an acquired OpenXR swapchain image and releases it on failure.
@@ -319,6 +348,12 @@ fn wait_for_acquired_swapchain_image(
     let res = swapchain.lock().wait_image(xr::Duration::INFINITE);
     wd.disarm();
     if let Err(e) = res {
+        gpu.record_gpu_flight_event(GpuFlightEventKind::OpenXrCall {
+            call: GpuFlightOpenXrCall::WaitImage,
+            result: GpuFlightCallResult::failed_debug(e),
+            image_index: None,
+            predicted_display_time_nanos: None,
+        });
         // OpenXR requires every successful `acquire_image` to be paired with
         // `release_image`, even when `wait_image` fails. Without this release the
         // runtime considers the image still in flight and `xrEndFrame` blocks until
@@ -327,6 +362,12 @@ fn wait_for_acquired_swapchain_image(
         log_hmd_submit_failure_with_error(HmdSubmitSkipReason::SwapchainWaitFailed, e);
         return false;
     }
+    gpu.record_gpu_flight_event(GpuFlightEventKind::OpenXrCall {
+        call: GpuFlightOpenXrCall::WaitImage,
+        result: GpuFlightCallResult::Ok,
+        image_index: None,
+        predicted_display_time_nanos: None,
+    });
     true
 }
 

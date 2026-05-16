@@ -14,6 +14,7 @@ use super::shared::{
     GpuContextParts, GpuRuntimeHandles, assemble_context, log_device_capability_summary,
 };
 use crate::config::VsyncMode;
+use crate::diagnostics::gpu_flight_recorder::GpuFlightRecorder;
 use crate::gpu::submission_state::GpuSubmissionState;
 
 impl GpuContext {
@@ -41,10 +42,15 @@ impl GpuContext {
         );
         let mapped_buffer_health = Arc::new(GpuMappedBufferHealth::new());
         let device_health = Arc::new(GpuDeviceHealth::new());
+        let flight_recorder = Arc::new(GpuFlightRecorder::new());
+        let adapter_info = adapter.get_info();
         install_uncaptured_error_handler(
             device.as_ref(),
             Arc::clone(&mapped_buffer_health),
             Arc::clone(&device_health),
+            Arc::clone(&flight_recorder),
+            adapter_info.name.clone(),
+            adapter_info.backend,
         );
         // `Arc<dyn Window>` is `Into<SurfaceTarget<'static>>`, so the returned `Surface` is
         // already `'static` -- no `transmute` is required to extend the borrow.
@@ -60,7 +66,6 @@ impl GpuContext {
         config.desired_maximum_frame_latency = max_frame_latency;
         GpuContext::configure_surface_checked(&surface_safe, device.as_ref(), &config)
             .map_err(GpuError::SurfaceConfigure)?;
-        let adapter_info = adapter.get_info();
         let limits = GpuLimits::try_new(device.as_ref(), adapter)?;
         let depth_stencil_format = crate::gpu::main_forward_depth_stencil_format(device.features());
         let msaa = MsaaSupport::discover(
@@ -101,6 +106,7 @@ impl GpuContext {
             Arc::clone(&device),
             queue,
             Arc::clone(&mapped_buffer_health),
+            Arc::clone(&flight_recorder),
         )?;
         let submission = GpuSubmissionState::new(
             runtime.driver_thread,
@@ -119,6 +125,7 @@ impl GpuContext {
             gpu_queue_access_gate: runtime.gpu_queue_access_gate,
             mapped_buffer_health,
             device_health,
+            flight_recorder,
             surface: Some(surface_safe),
             config,
             supported_present_modes,

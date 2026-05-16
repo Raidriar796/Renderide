@@ -12,6 +12,7 @@ use super::super::sync::device_health::GpuDeviceHealth;
 use super::super::sync::mapped_buffer_health::{
     GpuMappedBufferHealth, validation_mentions_mapped_buffer_invalidation,
 };
+use crate::diagnostics::gpu_flight_recorder::{GpuFlightEventKind, GpuFlightRecorder};
 
 /// Asynchronously requests a device from `adapter` for `required_features`.
 ///
@@ -22,6 +23,7 @@ pub(crate) async fn request_device_for_adapter(
     required_features: wgpu::Features,
     mapped_buffer_health: Arc<GpuMappedBufferHealth>,
     device_health: Arc<GpuDeviceHealth>,
+    flight_recorder: Arc<GpuFlightRecorder>,
 ) -> Result<(Arc<wgpu::Device>, wgpu::Queue), GpuError> {
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
@@ -32,7 +34,15 @@ pub(crate) async fn request_device_for_adapter(
         })
         .await
         .map_err(|e| GpuError::Device(format!("{e:?}")))?;
-    install_uncaptured_error_handler(&device, mapped_buffer_health, device_health);
+    let adapter_info = adapter.get_info();
+    install_uncaptured_error_handler(
+        &device,
+        mapped_buffer_health,
+        device_health,
+        flight_recorder,
+        adapter_info.name,
+        adapter_info.backend,
+    );
     Ok((Arc::new(device), queue))
 }
 
@@ -45,12 +55,22 @@ pub(crate) fn install_uncaptured_error_handler(
     device: &wgpu::Device,
     mapped_buffer_health: Arc<GpuMappedBufferHealth>,
     device_health: Arc<GpuDeviceHealth>,
+    flight_recorder: Arc<GpuFlightRecorder>,
+    adapter_name: String,
+    backend: wgpu::Backend,
 ) {
     let lost_health = Arc::clone(&mapped_buffer_health);
     device.set_device_lost_callback(move |reason, message| {
         logger::error!("wgpu device lost: reason={reason:?} message={message}");
         lost_health.mark_invalid("wgpu device lost");
-        device_health.mark_lost(format!("{reason:?}: {message}"));
+        let generation = device_health.mark_lost(format!("{reason:?}: {message}"));
+        flight_recorder.record(GpuFlightEventKind::DeviceLost {
+            generation,
+            adapter_name: adapter_name.clone(),
+            backend,
+            reason: format!("{reason:?}"),
+            message,
+        });
     });
 
     device.on_uncaptured_error(Arc::new(move |err: wgpu::Error| match err {

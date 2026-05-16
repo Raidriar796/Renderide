@@ -2,6 +2,9 @@
 //! swapchain acquire-with-recovery, and small surface accessors.
 
 use crate::config::VsyncMode;
+use crate::diagnostics::gpu_flight_recorder::{
+    GpuFlightEventKind, GpuFlightSurfaceReconfigureOutcome, GpuFlightSurfaceReconfigureSite,
+};
 
 use super::GpuContext;
 
@@ -60,6 +63,12 @@ impl GpuContext {
     /// from the runtime are cheap.
     pub fn set_present_mode(&mut self, mode: VsyncMode) {
         if self.device_lost() {
+            self.record_surface_reconfigure(
+                GpuFlightSurfaceReconfigureSite::PresentMode,
+                GpuFlightSurfaceReconfigureOutcome::SkippedDeviceLost,
+                self.surface_extent_px(),
+                self.surface_extent_px(),
+            );
             return;
         }
         let resolved = mode.resolve_present_mode(&self.supported_present_modes);
@@ -69,8 +78,15 @@ impl GpuContext {
             return;
         }
         let previous = self.config.present_mode;
+        let old_extent = self.surface_extent_px();
         self.config.present_mode = resolved;
         if let Err(error) = self.configure_current_surface() {
+            self.record_surface_reconfigure(
+                GpuFlightSurfaceReconfigureSite::PresentMode,
+                GpuFlightSurfaceReconfigureOutcome::Failed(error.clone()),
+                old_extent,
+                self.surface_extent_px(),
+            );
             logger::warn!(
                 "Present mode reconfigure failed: {:?} -> {:?} (vsync={:?} extent={}x{} format={:?}): {error}",
                 previous,
@@ -82,6 +98,12 @@ impl GpuContext {
             );
             return;
         }
+        self.record_surface_reconfigure(
+            GpuFlightSurfaceReconfigureSite::PresentMode,
+            GpuFlightSurfaceReconfigureOutcome::Succeeded,
+            old_extent,
+            self.surface_extent_px(),
+        );
         logger::info!(
             "Present mode set: {:?} -> {:?} (vsync={:?} extent={}x{} format={:?})",
             previous,
@@ -102,17 +124,29 @@ impl GpuContext {
     /// [`wgpu::CurrentSurfaceTexture::Outdated`].
     pub fn reconfigure(&mut self, width: u32, height: u32) {
         profiling::scope!("gpu::reconfigure_surface");
+        let old = (self.config.width, self.config.height);
         if self.device_lost() {
             self.surface_configured = false;
+            self.record_surface_reconfigure(
+                GpuFlightSurfaceReconfigureSite::Resize,
+                GpuFlightSurfaceReconfigureOutcome::SkippedDeviceLost,
+                old,
+                old,
+            );
             logger::warn!("Surface reconfigure skipped because the GPU device is lost");
             return;
         }
-        let old = (self.config.width, self.config.height);
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         self.depth_attachment = None;
         self.depth_extent_px = (0, 0);
         if let Err(error) = self.configure_current_surface() {
+            self.record_surface_reconfigure(
+                GpuFlightSurfaceReconfigureSite::Resize,
+                GpuFlightSurfaceReconfigureOutcome::Failed(error.clone()),
+                old,
+                self.surface_extent_px(),
+            );
             logger::warn!(
                 "Surface reconfigure failed: old_extent={}x{} new_extent={}x{} format={:?} present_mode={:?}: {error}",
                 old.0,
@@ -124,6 +158,12 @@ impl GpuContext {
             );
             return;
         }
+        self.record_surface_reconfigure(
+            GpuFlightSurfaceReconfigureSite::Resize,
+            GpuFlightSurfaceReconfigureOutcome::Succeeded,
+            old,
+            self.surface_extent_px(),
+        );
         logger::info!(
             "Surface reconfigured: old_extent={}x{} new_extent={}x{} format={:?} present_mode={:?}",
             old.0,
@@ -133,6 +173,24 @@ impl GpuContext {
             self.config.format,
             self.config.present_mode,
         );
+    }
+
+    /// Records a surface reconfiguration event in the GPU flight recorder.
+    fn record_surface_reconfigure(
+        &self,
+        site: GpuFlightSurfaceReconfigureSite,
+        outcome: GpuFlightSurfaceReconfigureOutcome,
+        old_extent: (u32, u32),
+        new_extent: (u32, u32),
+    ) {
+        self.record_gpu_flight_event(GpuFlightEventKind::SurfaceReconfigure {
+            site,
+            outcome,
+            old_extent,
+            new_extent,
+            format: self.config.format,
+            present_mode: self.config.present_mode,
+        });
     }
 
     /// Whether this context drives a real swapchain surface (vs. headless offscreen primary target).

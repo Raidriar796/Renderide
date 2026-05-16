@@ -233,6 +233,8 @@ pub(super) struct SubmitFrameBatchStats {
     pub(super) submit_enqueue_ms: f64,
     /// Number of command buffers submitted.
     pub(super) command_buffer_count: usize,
+    /// Whether the submit included the window swapchain target.
+    pub(super) target_is_swapchain: bool,
     /// Deferred upload traffic.
     pub(super) upload_stats: FrameUploadBatchStats,
 }

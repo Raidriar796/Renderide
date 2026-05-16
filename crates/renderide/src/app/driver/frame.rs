@@ -264,6 +264,12 @@ impl AppDriver {
         };
 
         logger::error!("GPU device lost; shutting down renderer: generation={generation}");
+        if let Some(target) = self.target.as_ref() {
+            target.gpu().record_device_loss_observed(generation);
+            target
+                .gpu()
+                .dump_gpu_flight_recorder_once("gpu-device-lost");
+        }
         self.runtime.log_compact_renderer_summary("gpu-device-lost");
         self.request_exit(ExitReason::GpuDeviceLost, event_loop);
         true
@@ -397,6 +403,7 @@ impl AppDriver {
         let gpu = target.gpu();
         if let Some(err) = gpu.take_driver_error() {
             logger::error!("{err}");
+            gpu.dump_gpu_flight_recorder_once("driver-thread-error");
         }
         // Cheap (two atomic loads); plotted alongside `event_loop_idle_ms` so a regression
         // in driver-thread pipelining is visible in the same Tracy trace as a regression in

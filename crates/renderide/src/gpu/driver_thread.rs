@@ -35,6 +35,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::diagnostics::gpu_flight_recorder::{
+    GpuFlightCallResult, GpuFlightDriverStage, GpuFlightEventKind, GpuFlightRecorder,
+};
 use crate::diagnostics::log_throttle::LogThrottle;
 pub use error::DriverError;
 pub use submit_batch::{SubmitBatch, SubmitWait};
@@ -67,6 +70,7 @@ pub struct DriverThread {
     errors: Arc<DriverErrorState>,
     surface_counters: Arc<SurfaceCounters>,
     submit_counters: Arc<SubmitCounters>,
+    flight_recorder: Arc<GpuFlightRecorder>,
     handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -82,6 +86,7 @@ impl DriverThread {
     pub fn new(
         queue: Arc<wgpu::Queue>,
         gpu_queue_access_gate: crate::gpu::GpuQueueAccessGate,
+        flight_recorder: Arc<GpuFlightRecorder>,
     ) -> std::io::Result<Self> {
         let ring = Arc::new(BoundedRing::<DriverMessage>::new(RING_CAPACITY));
         let errors = Arc::new(DriverErrorState::default());
@@ -92,6 +97,7 @@ impl DriverThread {
         let errors_clone = Arc::clone(&errors);
         let surface_counters_clone = Arc::clone(&surface_counters);
         let submit_counters_clone = Arc::clone(&submit_counters);
+        let flight_recorder_clone = Arc::clone(&flight_recorder);
         let handle = thread::Builder::new()
             .name("renderer-driver".to_string())
             .spawn(move || {
@@ -102,6 +108,7 @@ impl DriverThread {
                     errors_clone,
                     surface_counters_clone,
                     submit_counters_clone,
+                    flight_recorder_clone,
                 );
             })?;
 
@@ -110,6 +117,7 @@ impl DriverThread {
             errors,
             surface_counters,
             submit_counters,
+            flight_recorder,
             handle: Some(handle),
         })
     }
@@ -127,6 +135,9 @@ impl DriverThread {
     /// render loop on the next tick.
     pub fn submit(&self, batch: SubmitBatch) -> Option<SubmitToken> {
         let has_surface = batch.surface_texture.is_some();
+        let has_xr_finalize = batch.xr_finalize.is_some();
+        let command_buffers = batch.command_buffers.len();
+        let frame_seq = batch.frame_seq;
         if has_surface {
             self.surface_counters.note_submitted();
         }
@@ -142,8 +153,24 @@ impl DriverThread {
             // show a phantom in-flight batch.
             self.submit_counters.note_submit_done();
             logger::warn!("driver thread exited; dropping submit batch");
+            self.record_driver_event(
+                GpuFlightDriverStage::DroppedAfterExit,
+                frame_seq,
+                command_buffers,
+                has_surface,
+                has_xr_finalize,
+                GpuFlightCallResult::failed_static("driver_thread_exited"),
+            );
             return None;
         }
+        self.record_driver_event(
+            GpuFlightDriverStage::Enqueued,
+            frame_seq,
+            command_buffers,
+            has_surface,
+            has_xr_finalize,
+            GpuFlightCallResult::Ok,
+        );
         let enqueue_elapsed = enqueue_start.elapsed();
         if enqueue_elapsed >= SLOW_DRIVER_ENQUEUE_THRESHOLD
             && let Some(occurrence) = SLOW_DRIVER_ENQUEUE_LOG.should_log(4, 64)
@@ -168,6 +195,29 @@ impl DriverThread {
         #[cfg(feature = "tracy")]
         tracy_client::plot!("driver/ring_depth", self.ring.depth() as f64);
         Some(token)
+    }
+
+    /// Records a driver-thread event with the current ring and backlog snapshot.
+    fn record_driver_event(
+        &self,
+        stage: GpuFlightDriverStage,
+        frame_seq: u64,
+        command_buffers: usize,
+        has_surface: bool,
+        has_xr_finalize: bool,
+        result: GpuFlightCallResult,
+    ) {
+        let (pushed, done) = self.submit_counters.snapshot();
+        self.flight_recorder.record(GpuFlightEventKind::Driver {
+            stage,
+            frame_seq,
+            command_buffers,
+            has_surface,
+            has_xr_finalize,
+            ring_depth: self.ring.depth(),
+            backlog: pushed.saturating_sub(done),
+            result,
+        });
     }
 
     /// Blocks until every previously-submitted surface-carrying batch has reached

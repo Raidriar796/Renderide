@@ -248,6 +248,7 @@ impl CompiledRenderGraph {
             command_batch_assembly_ms,
             submit_enqueue_ms,
             command_buffer_count,
+            target_is_swapchain,
             upload_stats: upload.stats,
         };
         {

@@ -2,12 +2,14 @@
 
 use glam::{Quat, Vec3};
 
+use crate::diagnostics::gpu_flight_recorder::GpuFlightRecorder;
 use crate::frontend::input::vr_inputs_for_session;
 use crate::gpu::GpuQueueAccessGate;
 use crate::shared::{HandState, HeadOutputDevice, OutputState, VRControllerState, VRInputsState};
 use crate::xr::{OpenxrFrameTick, synthesize_hand_states};
 
 use super::AppDriver;
+use std::sync::Arc;
 
 /// Latest OpenXR input state sampled for host IPC.
 #[derive(Debug, Default)]
@@ -44,7 +46,11 @@ impl AppDriver {
             .target
             .as_ref()
             .map(|target| target.gpu().gpu_queue_access_gate().clone())?;
-        let tick = self.begin_openxr_frame_tick(&gpu_queue_access_gate);
+        let flight_recorder = self
+            .target
+            .as_ref()
+            .map(|target| Arc::clone(target.gpu().gpu_flight_recorder()))?;
+        let tick = self.begin_openxr_frame_tick(&gpu_queue_access_gate, flight_recorder.as_ref());
         if let Some(ref tick) = tick {
             self.update_xr_input_cache(tick);
         }
@@ -54,6 +60,7 @@ impl AppDriver {
     fn begin_openxr_frame_tick(
         &mut self,
         gpu_queue_access_gate: &GpuQueueAccessGate,
+        flight_recorder: &GpuFlightRecorder,
     ) -> Option<OpenxrFrameTick> {
         let target = self.target.as_mut()?;
         let session = target.xr_session_mut()?;
@@ -61,6 +68,7 @@ impl AppDriver {
             &mut session.handles,
             &mut self.runtime,
             gpu_queue_access_gate,
+            flight_recorder,
         )
     }
 

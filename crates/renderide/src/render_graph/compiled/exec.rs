@@ -223,6 +223,7 @@ impl CompiledRenderGraph {
             },
         )?;
         command_diagnostics.apply_submit(submit_stats);
+        command_diagnostics.record_flight_event(mv_ctx.gpu);
         command_diagnostics.plot();
         command_diagnostics.log_if_slow();
 

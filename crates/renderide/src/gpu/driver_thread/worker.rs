@@ -13,6 +13,9 @@ use super::submit_batch::{DriverMessage, SubmitBatch};
 use super::submit_counters::SubmitCounters;
 use super::surface_counters::SurfaceCounters;
 use super::xr_finalize::run_xr_finalize;
+use crate::diagnostics::gpu_flight_recorder::{
+    GpuFlightCallResult, GpuFlightDriverStage, GpuFlightEventKind, GpuFlightRecorder,
+};
 use crate::gpu::GpuQueueAccessGate;
 use crate::gpu::frame_cpu_gpu_timing::{
     FrameTimingTrack, make_gpu_done_callback, record_frame_bracket_gpu_ms, record_real_submit,
@@ -25,6 +28,36 @@ use crate::gpu::frame_cpu_gpu_timing::{
 /// released -- preventing the main thread from hanging forever on a crashed driver.
 struct ConsumerLivenessGuard<'a> {
     ring: &'a BoundedRing<DriverMessage>,
+}
+
+/// Shared handles used while processing one driver-thread batch.
+#[derive(Clone, Copy)]
+struct DriverLoopContext<'a> {
+    /// Queue that receives command-buffer submits.
+    queue: &'a wgpu::Queue,
+    /// Gate used to serialize queue access with OpenXR and uploads.
+    gpu_queue_access_gate: &'a GpuQueueAccessGate,
+    /// Surface present counters for acquire/present synchronization.
+    surface_counters: &'a SurfaceCounters,
+    /// Submit counters used for backlog snapshots.
+    submit_counters: &'a SubmitCounters,
+    /// In-memory crash diagnostic recorder.
+    flight_recorder: &'a GpuFlightRecorder,
+}
+
+/// Copyable summary of the batch being processed.
+#[derive(Clone, Copy)]
+struct DriverBatchSummary {
+    /// Driver ring depth after the batch was popped.
+    ring_depth: usize,
+    /// Frame sequence assigned by frame timing, or zero when untracked.
+    frame_seq: u64,
+    /// Command buffers in the batch.
+    command_buffers: usize,
+    /// Whether this batch carries a surface texture.
+    has_surface: bool,
+    /// Whether this batch carries OpenXR finalize work.
+    has_xr_finalize: bool,
 }
 
 impl Drop for ConsumerLivenessGuard<'_> {
@@ -42,9 +75,10 @@ pub(super) fn driver_loop(
     ring: Arc<BoundedRing<DriverMessage>>,
     queue: Arc<wgpu::Queue>,
     gpu_queue_access_gate: GpuQueueAccessGate,
-    errors: Arc<DriverErrorState>,
+    _errors: Arc<DriverErrorState>,
     surface_counters: Arc<SurfaceCounters>,
     submit_counters: Arc<SubmitCounters>,
+    flight_recorder: Arc<GpuFlightRecorder>,
 ) {
     profiling::register_thread!("renderer-driver");
     logger::info!("driver thread started");
@@ -56,14 +90,15 @@ pub(super) fn driver_loop(
             let DriverMessage::Submit(batch) = ring.pop() else {
                 break;
             };
-            process_batch(
-                queue.as_ref(),
-                &gpu_queue_access_gate,
-                &errors,
-                &surface_counters,
-                &submit_counters,
-                *batch,
-            );
+            let ring_depth = ring.depth();
+            let ctx = DriverLoopContext {
+                queue: queue.as_ref(),
+                gpu_queue_access_gate: &gpu_queue_access_gate,
+                surface_counters: &surface_counters,
+                submit_counters: &submit_counters,
+                flight_recorder: flight_recorder.as_ref(),
+            };
+            process_batch(ctx, ring_depth, *batch);
         }
     }
     // A `DriverMessage::Shutdown` value breaks the loop above; nothing further to do.
@@ -78,14 +113,7 @@ pub(super) fn driver_loop(
 
 /// Handles one batch end-to-end: submit, install frame-timing callback, present, signal
 /// the oneshot. Each step is instrumented for Tracy.
-fn process_batch(
-    queue: &wgpu::Queue,
-    gpu_queue_access_gate: &GpuQueueAccessGate,
-    errors: &DriverErrorState,
-    surface_counters: &SurfaceCounters,
-    submit_counters: &SubmitCounters,
-    batch: SubmitBatch,
-) {
+fn process_batch(ctx: DriverLoopContext<'_>, ring_depth: usize, batch: SubmitBatch) {
     profiling::scope!("driver::frame");
     let SubmitBatch {
         command_buffers,
@@ -97,64 +125,157 @@ fn process_batch(
         xr_finalize,
         frame_seq,
     } = batch;
-
-    {
-        profiling::scope!("driver::submit");
-        // Serialise against texture uploads and OpenXR queue-access calls via the shared gate.
-        let _gate = {
-            profiling::scope!("driver::submit::queue_gate_lock");
-            gpu_queue_access_gate.lock()
-        };
-        {
-            profiling::scope!("driver::submit::queue_submit");
-            queue.submit(command_buffers)
-        }
+    let summary = DriverBatchSummary {
+        ring_depth,
+        frame_seq,
+        command_buffers: command_buffers.len(),
+        has_surface: surface_texture.is_some(),
+        has_xr_finalize: xr_finalize.is_some(),
     };
-    // Bumped immediately after the submit returns and the gate is dropped so the backlog
-    // plot reflects "in-flight on driver" without waiting on `present` or `xr_finalize`.
-    submit_counters.note_submit_done();
+
+    submit_commands(ctx, summary, command_buffers);
 
     if let Some(track) = frame_timing {
         // Capture the post-submit instant on this thread for the `submit_latency_ms`
         // diagnostic. The HUD's CPU column is published synchronously from the runtime tick
         // epilogue via `record_main_thread_cpu_end` and does not depend on this instant.
         let real_submit_at = record_real_submit(&track);
-        register_gpu_completion(queue, track, real_submit_at, frame_bracket_readback);
+        register_gpu_completion(ctx.queue, track, real_submit_at, frame_bracket_readback);
     }
 
     for cb in on_submitted_work_done {
-        queue.on_submitted_work_done(cb);
+        ctx.queue.on_submitted_work_done(cb);
     }
 
-    if let Some(finalize) = xr_finalize {
-        // Deferred OpenXR `xrReleaseSwapchainImage` + `xrEndFrame` for the VR HMD path.
-        // Running it here keeps the main thread out of `flush_driver` so frame N+1's CPU
-        // work overlaps with frame N's compositor handoff. The next tick's `wait_frame`
-        // gates on the matching finalize signal before issuing `xrBeginFrame`.
-        run_xr_finalize(gpu_queue_access_gate, finalize);
-    }
-
-    if let Some(tex) = surface_texture {
-        {
-            profiling::scope!("driver::present");
-            // `SurfaceTexture::present` is infallible in the current wgpu API; if that
-            // changes, route the error into `errors` with `DriverErrorKind::Present`.
-            tex.present();
-        };
-        // Signal to the main thread that the previous surface texture is no longer
-        // outstanding so its next `get_current_texture` call can proceed without a
-        // full ring flush.
-        surface_counters.note_presented();
-    }
+    finalize_xr_if_present(ctx, summary, xr_finalize);
+    present_surface_if_present(ctx, summary, surface_texture);
 
     if let Some(wait) = wait {
         wait.signal();
     }
+}
 
-    // `frame_seq` is carried for future error-context enrichment; reference it so the
-    // compiler does not warn about unused fields while we grow the error path.
-    let _ = frame_seq;
-    let _ = errors; // `errors` will fill in once wgpu surfaces fallible submit/present.
+/// Submits command buffers through wgpu while holding the queue gate.
+fn submit_commands(
+    ctx: DriverLoopContext<'_>,
+    summary: DriverBatchSummary,
+    command_buffers: Vec<wgpu::CommandBuffer>,
+) {
+    record_driver_event(
+        ctx,
+        summary,
+        GpuFlightDriverStage::SubmitStart,
+        GpuFlightCallResult::Ok,
+    );
+    {
+        profiling::scope!("driver::submit");
+        // Serialise against texture uploads and OpenXR queue-access calls via the shared gate.
+        let _gate = {
+            profiling::scope!("driver::submit::queue_gate_lock");
+            ctx.gpu_queue_access_gate.lock()
+        };
+        {
+            profiling::scope!("driver::submit::queue_submit");
+            ctx.queue.submit(command_buffers)
+        }
+    };
+    // Bumped immediately after the submit returns and the gate is dropped so the backlog
+    // plot reflects "in-flight on driver" without waiting on `present` or `xr_finalize`.
+    ctx.submit_counters.note_submit_done();
+    record_driver_event(
+        ctx,
+        summary,
+        GpuFlightDriverStage::SubmitDone,
+        GpuFlightCallResult::Ok,
+    );
+}
+
+/// Runs deferred OpenXR finalize work when the batch carries it.
+fn finalize_xr_if_present(
+    ctx: DriverLoopContext<'_>,
+    summary: DriverBatchSummary,
+    xr_finalize: Option<super::XrFinalizeWork>,
+) {
+    let Some(finalize) = xr_finalize else {
+        return;
+    };
+    // Deferred OpenXR `xrReleaseSwapchainImage` + `xrEndFrame` for the VR HMD path.
+    // Running it here keeps the main thread out of `flush_driver` so frame N+1's CPU
+    // work overlaps with frame N's compositor handoff. The next tick's `wait_frame`
+    // gates on the matching finalize signal before issuing `xrBeginFrame`.
+    record_driver_event(
+        ctx,
+        summary,
+        GpuFlightDriverStage::XrFinalizeStart,
+        GpuFlightCallResult::Ok,
+    );
+    let result = run_xr_finalize(ctx.gpu_queue_access_gate, finalize, ctx.flight_recorder);
+    let (failed, flight_result) = match result {
+        Ok(()) => (false, GpuFlightCallResult::Ok),
+        Err(err) => (true, GpuFlightCallResult::failed_debug(err)),
+    };
+    record_driver_event(
+        ctx,
+        summary,
+        GpuFlightDriverStage::XrFinalizeDone,
+        flight_result,
+    );
+    if failed {
+        ctx.flight_recorder.dump_once("xr-finalize-failed");
+    }
+}
+
+/// Presents a surface texture when the batch carries one.
+fn present_surface_if_present(
+    ctx: DriverLoopContext<'_>,
+    summary: DriverBatchSummary,
+    surface_texture: Option<wgpu::SurfaceTexture>,
+) {
+    let Some(tex) = surface_texture else {
+        return;
+    };
+    {
+        profiling::scope!("driver::present");
+        record_driver_event(
+            ctx,
+            summary,
+            GpuFlightDriverStage::PresentStart,
+            GpuFlightCallResult::Ok,
+        );
+        // `SurfaceTexture::present` is infallible in the current wgpu API; if that
+        // changes, route the error into `errors` with `DriverErrorKind::Present`.
+        tex.present();
+    };
+    // Signal to the main thread that the previous surface texture is no longer
+    // outstanding so its next `get_current_texture` call can proceed without a
+    // full ring flush.
+    ctx.surface_counters.note_presented();
+    record_driver_event(
+        ctx,
+        summary,
+        GpuFlightDriverStage::PresentDone,
+        GpuFlightCallResult::Ok,
+    );
+}
+
+/// Records a driver event using the current submit backlog snapshot.
+fn record_driver_event(
+    ctx: DriverLoopContext<'_>,
+    summary: DriverBatchSummary,
+    stage: GpuFlightDriverStage,
+    result: GpuFlightCallResult,
+) {
+    let (pushed, done) = ctx.submit_counters.snapshot();
+    ctx.flight_recorder.record(GpuFlightEventKind::Driver {
+        stage,
+        frame_seq: summary.frame_seq,
+        command_buffers: summary.command_buffers,
+        has_surface: summary.has_surface,
+        has_xr_finalize: summary.has_xr_finalize,
+        ring_depth: summary.ring_depth,
+        backlog: pushed.saturating_sub(done),
+        result,
+    });
 }
 
 /// Picks the GPU-completion path for a tracked submit.
