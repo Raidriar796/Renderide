@@ -25,11 +25,11 @@
 //!
 //! # Scope
 //!
-//! The gate is held around main-thread `Queue::write_texture` call sites in the asset
-//! texture upload path, around the driver thread's `Queue::submit`, and around the narrow
-//! OpenXR calls listed above. Long waits such as `xrWaitFrame`, `xrWaitSwapchainImage`,
-//! view location, and input sync stay outside the gate so compositor stalls do not block
-//! unrelated GPU submissions.
+//! The gate is held around `Queue::write_texture` call sites in the asset texture upload
+//! path, decoded video texture callbacks, the driver thread's `Queue::submit`, and the
+//! narrow OpenXR calls listed above. Long waits such as `xrWaitFrame`,
+//! `xrWaitSwapchainImage`, view location, and input sync stay outside the gate so
+//! compositor stalls do not block unrelated GPU submissions.
 
 use std::sync::Arc;
 

@@ -49,6 +49,10 @@ pub fn on_video_texture_load(queue: &mut AssetTransferQueue, v: VideoTextureLoad
         queue.pending.pending_video_texture_loads.insert(id, v);
         return;
     };
+    let Some(gpu_queue_access_gate) = queue.gpu.gpu_queue_access_gate.clone() else {
+        queue.pending.pending_video_texture_loads.insert(id, v);
+        return;
+    };
 
     let props = queue.catalogs.video_texture_properties_or_default(id);
     if queue.ensure_video_texture_with_props(&props).is_none() {
@@ -56,7 +60,7 @@ pub fn on_video_texture_load(queue: &mut AssetTransferQueue, v: VideoTextureLoad
         return;
     }
 
-    if let Some(player) = VideoPlayer::new(v, device, gpu_queue) {
+    if let Some(player) = VideoPlayer::new(v, device, gpu_queue, gpu_queue_access_gate) {
         queue.pending.pending_video_texture_loads.remove(&id);
         queue.video.video_players.insert(id, player);
     }
