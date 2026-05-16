@@ -28,7 +28,7 @@ fn saturate3(value: vec3<f32>) -> vec3<f32> {
 }
 
 fn shininess_to_perceptual_roughness(shininess: f32) -> f32 {
-    return clamp(sqrt(2.0 / (max(shininess, 0.0) + 2.0)), 0.02, 1.0);
+    return clamp(sqrt(2.0 / (max(shininess, 0.0) + 2.0)), 0.0, 1.0);
 }
 
 fn noise_uv(uv: vec2<f32>, noise_st: vec4<f32>, hair_thinness: f32) -> vec2<f32> {

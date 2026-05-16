@@ -138,7 +138,7 @@ fn sample_surface_for_layout(
         smoothness = clamp(xb::mat._Glossiness * mg.a, 0.0, 1.0);
     }
     var roughness = 1.0 - smoothness;
-    roughness = clamp(roughness * (1.7 - 0.7 * roughness), 0.045, 1.0);
+    roughness = clamp(roughness * (1.7 - 0.7 * roughness), 0.0, 1.0);
 
     // Direct-lighting albedo is the metallic-discounted tinted base so a perfect metal
     // contributes no diffuse term. Multiplication is linear w.r.t. the saturation lerp, so

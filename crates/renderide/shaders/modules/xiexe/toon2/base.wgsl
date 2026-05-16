@@ -269,7 +269,7 @@ struct SurfaceData {
     bitangent: vec3<f32>,
     /// Final metallic factor.
     metallic: f32,
-    /// Remapped roughness clamped to `[0.045, 1.0]`.
+    /// Remapped roughness clamped to `[0.0, 1.0]`.
     roughness: f32,
     /// Raw smoothness (for matcap LOD selection).
     smoothness: f32,

@@ -113,6 +113,8 @@ struct DirectSpecularTerms {
     /// Primary lobe perceptual roughness, derived from `_SpecularArea` via
     /// `roughness = 1 - remap_specular_area(_SpecularArea)`.
     roughness: f32,
+    /// Primary lobe roughness widened by geometric specular antialiasing.
+    aa_roughness: f32,
     /// Multiple-scattering energy compensation sampled from the frame DFG LUT.
     energy_compensation: vec3<f32>,
 }
@@ -127,11 +129,13 @@ struct DirectSpecularTerms {
 /// blend.
 fn primary_direct_specular_terms(s: xb::SurfaceData, view_dir: vec3<f32>) -> DirectSpecularTerms {
     let specular_reflectance = brdf::metallic_f0(s.diffuse_color, s.metallic);
-    let roughness = clamp(1.0 - remap_specular_area(xb::mat._SpecularArea), 0.045, 1.0);
+    let roughness = clamp(1.0 - remap_specular_area(xb::mat._SpecularArea), 0.0, 1.0);
+    let aa_roughness = brdf::filter_perceptual_roughness(roughness, s.normal);
     let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
-    let dfg = brdf::sample_ibl_dfg_lut(roughness, n_dot_v);
+    let direct_roughness = brdf::direct_perceptual_roughness(roughness);
+    let dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);
     let energy_compensation = brdf::energy_compensation_from_dfg(dfg, specular_reflectance);
-    return DirectSpecularTerms(specular_reflectance, roughness, energy_compensation);
+    return DirectSpecularTerms(specular_reflectance, roughness, aa_roughness, energy_compensation);
 }
 
 /// GGX direct-specular lobe evaluated against an arbitrary normal.
@@ -150,23 +154,24 @@ fn direct_specular_ggx(
         return vec3<f32>(0.0);
     }
 
-    let ndl = xb::saturate(dot(normal, light.direction));
-    if (ndl <= 1e-4 || light.attenuation <= 1e-4) {
+    if (light.attenuation <= 1e-4) {
         return vec3<f32>(0.0);
     }
 
-    let h = xb::safe_normalize(light.direction + view_dir, normal);
-    let ndh = xb::saturate(dot(normal, h));
-    let ndv = max(dot(normal, view_dir), 1e-4);
-    let ldh = xb::saturate(dot(light.direction, h));
+    let direct_lobe = brdf::eval_direct_specular_lobe(
+        normal,
+        light.direction,
+        view_dir,
+        perceptual_roughness,
+        specular_reflectance,
+        energy_compensation,
+    );
+    if (direct_lobe.n_dot_l <= 1e-4) {
+        return vec3<f32>(0.0);
+    }
 
-    let alpha = max(perceptual_roughness * perceptual_roughness, brdf::MIN_ALPHA);
-    let d_term = brdf::d_ggx(ndh, alpha);
-    let v_term = brdf::v_smith_ggx_correlated(ndv, ndl, alpha);
-    let f_term = brdf::f_schlick(specular_reflectance, brdf::f90_from_f0(specular_reflectance), ldh);
-    let radiance = light.color * light.attenuation * ndl;
-
-    var specular = max(vec3<f32>(0.0), d_term * v_term * f_term * energy_compensation);
+    let radiance = light.color * light.attenuation * direct_lobe.n_dot_l;
+    var specular = direct_lobe.specular_brdf;
     specular = specular * radiance * intensity;
     specular = specular * mix(vec3<f32>(1.0), s.diffuse_color, clamp(albedo_tint, 0.0, 1.0));
     return specular;
@@ -184,7 +189,7 @@ fn direct_specular(
         s,
         light,
         view_dir,
-        terms.roughness,
+        terms.aa_roughness,
         terms.specular_reflectance,
         terms.energy_compensation,
         max(0.0, xb::mat._SpecularIntensity),
@@ -323,7 +328,7 @@ fn indirect_reflection_branch_for_layout(
         return spec;
     }
 
-    let roughness = clamp(perceptual_roughness, 0.045, 1.0);
+    let roughness = clamp(perceptual_roughness, 0.0, 1.0);
     let n_dot_v = clamp(dot(normal, view_dir), 0.0, 1.0);
     let indirect_enabled = rprobe::has_indirect_specular(view_layer, xvb::reflection_uses_pbr_for_layout(keyword_layout));
     let dfg = brdf::sample_ibl_dfg_lut(roughness, n_dot_v);

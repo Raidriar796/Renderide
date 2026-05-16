@@ -78,15 +78,17 @@ fn xiexe_primary_direct_specular_uses_ggx_pbr_core() -> io::Result<()> {
 
     for required in [
         "let specular_reflectance = brdf::metallic_f0(s.diffuse_color, s.metallic);",
-        "let roughness = clamp(1.0 - remap_specular_area(xb::mat._SpecularArea), 0.045, 1.0);",
+        "let roughness = clamp(1.0 - remap_specular_area(xb::mat._SpecularArea), 0.0, 1.0);",
+        "let aa_roughness = brdf::filter_perceptual_roughness(roughness, s.normal);",
         "fn primary_direct_specular_terms(s: xb::SurfaceData, view_dir: vec3<f32>) -> DirectSpecularTerms {",
-        "let dfg = brdf::sample_ibl_dfg_lut(roughness, n_dot_v);",
+        "let direct_roughness = brdf::direct_perceptual_roughness(roughness);",
+        "let dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);",
         "let energy_compensation = brdf::energy_compensation_from_dfg(dfg, specular_reflectance);",
         "fn direct_specular_ggx(",
-        "let alpha = max(perceptual_roughness * perceptual_roughness, brdf::MIN_ALPHA);",
-        "let f_term = brdf::f_schlick(specular_reflectance, brdf::f90_from_f0(specular_reflectance), ldh);",
-        "var specular = max(vec3<f32>(0.0), d_term * v_term * f_term * energy_compensation);",
-        "let radiance = light.color * light.attenuation * ndl;",
+        "let direct_lobe = brdf::eval_direct_specular_lobe(",
+        "var specular = direct_lobe.specular_brdf;",
+        "let radiance = light.color * light.attenuation * direct_lobe.n_dot_l;",
+        "terms.aa_roughness",
         "max(0.0, xb::mat._SpecularIntensity)",
         "xb::mat._SpecularAlbedoTint",
         "clamp(albedo_tint, 0.0, 1.0)",
@@ -104,6 +106,11 @@ fn xiexe_primary_direct_specular_uses_ggx_pbr_core() -> io::Result<()> {
         "0.16 * reflectivity * reflectivity",
         "exp2((-5.55473 * ldh) - (6.98316 * ldh))",
         "let reflection = v_term * d_term * 3.14159265;",
+        "let alpha = max(perceptual_roughness * perceptual_roughness, brdf::MIN_ALPHA);",
+        "let d_term = brdf::d_ggx(",
+        "let v_term = brdf::v_smith_ggx_correlated(",
+        "let f_term = brdf::f_schlick(",
+        "d_term * v_term * f_term * energy_compensation",
         "smooth_specular",
         "xb::mat._SpecularIntensity * 0.001",
         "s.specular_mask",
@@ -156,6 +163,7 @@ fn xiexe_pbr_reflections_use_pbs_probe_energy_terms() -> io::Result<()> {
     for required in [
         "return rprobe::indirect_diffuse(world_pos, s.normal, view_layer, true);",
         "let indirect_enabled = rprobe::has_indirect_specular(view_layer, xvb::reflection_uses_pbr_for_layout(keyword_layout));",
+        "let roughness = clamp(perceptual_roughness, 0.0, 1.0);",
         "let dfg = brdf::sample_ibl_dfg_lut(roughness, n_dot_v);",
         "let specular_energy = brdf::indirect_specular_energy_from_dfg(dfg, specular_reflectance, indirect_enabled);",
         "let specular_visibility =\n        brdf::indirect_specular_visibility(n_dot_v, occlusion_scalar(s), roughness, specular_reflectance);",
@@ -178,6 +186,11 @@ fn xiexe_pbr_reflections_use_pbs_probe_energy_terms() -> io::Result<()> {
     assert!(
         !lighting_src.contains("let specular_occlusion = brdf::specular_ao_lagarde"),
         "Xiexe PBR reflections must route specular AO through PBS multi-bounce visibility"
+    );
+    assert!(
+        !lighting_src.contains("clamp(perceptual_roughness, 0.045, 1.0)")
+            && !lighting_src.contains("clamp(s.roughness, 0.045, 1.0)"),
+        "Xiexe indirect reflections must not apply the direct-light roughness floor"
     );
 
     let pbr_branch_pos = lighting_src
@@ -326,6 +339,27 @@ fn xiexe_direct_diffuse_uses_burley_with_ramp_tint() -> io::Result<()> {
         !lighting_src
             .contains("s.albedo.rgb * brdf::fd_lambert() * light.color * light.attenuation * ramp"),
         "Direct diffuse must not bypass the PBS Fresnel transmission envelope or Burley diffuse"
+    );
+    Ok(())
+}
+
+#[test]
+fn xiexe_surface_keeps_indirect_roughness_unfloored() -> io::Result<()> {
+    let surface_src = source_file(manifest_dir().join("shaders/modules/xiexe/toon2/surface.wgsl"))?;
+    assert!(
+        surface_src.contains("roughness = clamp(roughness * (1.7 - 0.7 * roughness), 0.0, 1.0);"),
+        "Xiexe surface roughness must allow mirror-smooth indirect reflections"
+    );
+    assert!(
+        !surface_src
+            .contains("roughness = clamp(roughness * (1.7 - 0.7 * roughness), 0.045, 1.0);"),
+        "Xiexe surface roughness must not bake in the direct-light roughness floor"
+    );
+
+    let base_src = source_file(manifest_dir().join("shaders/modules/xiexe/toon2/base.wgsl"))?;
+    assert!(
+        base_src.contains("/// Remapped roughness clamped to `[0.0, 1.0]`."),
+        "Xiexe roughness contract should document the unfloored indirect range"
     );
     Ok(())
 }

@@ -551,6 +551,7 @@ fn pbs_roughness_keeps_indirect_mirror_path_unclamped() -> io::Result<()> {
         "fn direct_alpha_from_perceptual_roughness(",
         "return max(clamped * clamped, MIN_ALPHA);",
         "fn direct_perceptual_roughness(",
+        "fn eval_direct_specular_lobe(",
     ] {
         assert!(
             brdf_src.contains(required),
@@ -594,7 +595,8 @@ fn pbs_direct_diffuse_uses_fresnel_transmission() -> io::Result<()> {
         "fn max_component(v: vec3<f32>) -> f32",
         "fn direct_diffuse_fresnel_transmission(f: vec3<f32>, f0: vec3<f32>) -> f32",
         "return clamp((1.0 - f_peak) / max(1.0 - f0_peak, 1e-4), 0.0, 1.0);",
-        "let fd = diffuse_color * direct_diffuse_fresnel_transmission(f, f0) * fd_burley(n_dot_v, n_dot_l, l_dot_h, diffuse_roughness);",
+        "* direct_diffuse_fresnel_transmission(direct_lobe.f, f0)",
+        "* fd_burley(direct_lobe.n_dot_v, direct_lobe.n_dot_l, direct_lobe.l_dot_h, diffuse_roughness);",
     ] {
         assert!(
             brdf_src.contains(required),
@@ -619,8 +621,8 @@ fn pbs_direct_diffuse_uses_burley_rough_diffuse() -> io::Result<()> {
         "let view_scatter = f_schlick_scalar(1.0, fd90, n_dot_v);",
         "return light_scatter * view_scatter * (1.0 / PI);",
         "specular_roughness: f32,\n    diffuse_roughness: f32,",
-        "let alpha = direct_alpha_from_perceptual_roughness(specular_roughness);",
-        "fd_burley(n_dot_v, n_dot_l, l_dot_h, diffuse_roughness)",
+        "let alpha = direct_alpha_from_perceptual_roughness(perceptual_roughness);",
+        "fd_burley(direct_lobe.n_dot_v, direct_lobe.n_dot_l, direct_lobe.l_dot_h, diffuse_roughness)",
     ] {
         assert!(
             brdf_src.contains(required),
@@ -639,6 +641,95 @@ fn pbs_direct_diffuse_uses_burley_rough_diffuse() -> io::Result<()> {
             lighting_src.contains(required),
             "pbs/lighting.wgsl must keep direct specular AA roughness separate from diffuse roughness; missing `{required}`"
         );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn pbs_direct_specular_lobe_is_shared() -> io::Result<()> {
+    let brdf_src = module_source("pbs/brdf.wgsl")?;
+    for required in [
+        "struct DirectSpecularEval",
+        "fn eval_direct_specular_lobe(",
+        "let alpha = direct_alpha_from_perceptual_roughness(perceptual_roughness);",
+        "let f = f_schlick(f0, f90_from_f0(f0), v_dot_h);",
+        "let d = d_ggx(n_dot_h, alpha);",
+        "let vis = v_smith_ggx_correlated(n_dot_v, n_dot_l, alpha);",
+        "let fr = max(vec3<f32>(0.0), (d * vis) * f * energy_compensation);",
+        "let direct_lobe = eval_direct_specular_lobe(n, ls.l, v, specular_roughness, f0, energy_compensation);",
+        "direct_lobe.specular_brdf",
+    ] {
+        assert!(
+            brdf_src.contains(required),
+            "pbs/brdf.wgsl must share direct specular lobe term `{required}`"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn fur_lighting_uses_full_pbs_brdf_stack() -> io::Result<()> {
+    let fur_lighting = module_source("fur/lighting.wgsl")?;
+    for required in [
+        "let aa_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);",
+        "direct = direct + brdf::direct_radiance_specular(",
+        "aa_roughness,\n                s.roughness,",
+        "let direct_roughness = brdf::direct_perceptual_roughness(s.roughness);",
+        "let direct_dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);",
+        "let energy_compensation = brdf::energy_compensation_from_dfg(direct_dfg, f0);",
+        "rprobe::has_indirect_specular(view_layer, options.glossy_reflections_enabled)",
+        "brdf::indirect_specular_energy_from_dfg(indirect_dfg, f0, indirect_specular_enabled)",
+        "brdf::indirect_specular_visibility(n_dot_v, s.occlusion, s.roughness, f0)",
+        "let ambient = brdf::indirect_diffuse_specular(",
+        "let indirect_specular = rprobe::indirect_specular_with_energy(",
+        "specular_energy * specular_visibility",
+    ] {
+        assert!(
+            fur_lighting.contains(required),
+            "fur/lighting.wgsl must use PBS BRDF feature `{required}`"
+        );
+    }
+    assert!(
+        !fur_lighting.contains("let specular_occlusion = brdf::specular_ao_lagarde"),
+        "Fur lighting must route specular AO through PBS multi-bounce visibility"
+    );
+
+    let fur_common = module_source("fur/common.wgsl")?;
+    assert!(
+        fur_common.contains("return clamp(sqrt(2.0 / (max(shininess, 0.0) + 2.0)), 0.0, 1.0);"),
+        "Fur shininess conversion must keep mirror-smooth indirect roughness available"
+    );
+    assert!(
+        !fur_common.contains(", 0.02, 1.0)"),
+        "Fur shininess conversion must not bake in a direct-light roughness floor"
+    );
+
+    for path in wgsl_files_recursive("shaders/modules/fur")? {
+        let label = file_label(&path);
+        if label.ends_with("fur/lighting.wgsl") || label.ends_with("fur/common.wgsl") {
+            continue;
+        }
+        let src = source_file(&path)?;
+        if !src.contains("psurf::specular_with_geometric_normal(") {
+            continue;
+        }
+        assert!(
+            src.contains("furl::shade_specular_clustered("),
+            "{label} must route core FurFX lighting through fur::lighting"
+        );
+        for forbidden in [
+            "brdf::d_ggx",
+            "brdf::v_smith_ggx_correlated",
+            "brdf::f_schlick",
+            "rprobe::indirect_specular_with_energy",
+            "brdf::specular_ao_lagarde",
+        ] {
+            assert!(
+                !src.contains(forbidden),
+                "{label} must not duplicate PBS BRDF feature `{forbidden}`"
+            );
+        }
     }
 
     Ok(())
