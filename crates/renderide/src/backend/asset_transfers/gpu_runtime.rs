@@ -11,7 +11,7 @@ pub(crate) struct AssetGpuRuntime {
     pub(crate) gpu_device: Option<Arc<wgpu::Device>>,
     /// Submission queue paired with [`Self::gpu_device`].
     pub(crate) gpu_queue: Option<Arc<wgpu::Queue>>,
-    /// Shared gate held around `Queue::write_texture` to avoid submit/write lock inversion.
+    /// Shared gate held around texture writes to avoid submit/write lock inversion.
     pub(crate) gpu_queue_access_gate: Option<crate::gpu::GpuQueueAccessGate>,
     /// Effective device limits snapshot.
     pub(crate) gpu_limits: Option<Arc<GpuLimits>>,

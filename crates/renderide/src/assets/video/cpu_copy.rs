@@ -4,9 +4,12 @@
 //! this sink (see [`crate::assets::video::player::VideoPlayer::new`]) so frames
 //! arrive in the Unity V=0-bottom convention shared by all sampled textures.
 //! This sink therefore writes the mapped buffer directly with no orientation
-//! transform.
+//! transform. Decoded-frame uploads take the shared GPU queue gate without
+//! blocking so GStreamer callbacks never race renderer submits or OpenXR queue
+//! ownership.
 
 use crate::assets::video::WgpuGstVideoSink;
+use crate::gpu::{GpuQueueAccessGate, GpuQueueAccessMode};
 use glam::IVec2;
 use gstreamer::prelude::ElementExt;
 use gstreamer_app::{AppSink, AppSinkCallbacks};
@@ -25,6 +28,8 @@ struct SinkState {
     device: Option<Arc<wgpu::Device>>,
     /// Queue used for CPU-to-GPU frame uploads.
     queue: Option<Arc<wgpu::Queue>>,
+    /// Shared gate serializing texture uploads with renderer submits and OpenXR queue access.
+    queue_access_gate: GpuQueueAccessGate,
     /// The texture currently being written into by the callback.
     write_texture: Option<Arc<wgpu::Texture>>,
     /// Width of [`Self::write_texture`].
@@ -114,13 +119,19 @@ pub struct CpuCopyVideoSink {
 }
 
 impl CpuCopyVideoSink {
-    /// Creates a CPU-copy sink backed by the supplied wgpu device and queue.
-    pub fn new(asset_id: i32, device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
+    /// Creates a CPU-copy sink backed by the supplied wgpu device, queue, and queue gate.
+    pub fn new(
+        asset_id: i32,
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        queue_access_gate: GpuQueueAccessGate,
+    ) -> Self {
         let sink = build_rgba_appsink();
         let shutdown = Arc::new(AtomicBool::new(false));
         let state = Arc::new(Mutex::new(SinkState {
             device: Some(device),
             queue: Some(queue),
+            queue_access_gate,
             write_texture: None,
             width: 0,
             height: 0,
@@ -271,7 +282,15 @@ fn upload_mapped_rgba_frame(
     let Some(bytes_per_row) = validated_frame_layout(asset_id, width, height, bytes.len()) else {
         return;
     };
+    let Some(_gate) = acquire_video_upload_gate(&state.queue_access_gate) else {
+        return;
+    };
     write_rgba_frame_to_texture(queue, texture, bytes, width, height, bytes_per_row);
+}
+
+/// Attempts to acquire the queue gate for a decoded video frame upload.
+fn acquire_video_upload_gate(gate: &GpuQueueAccessGate) -> Option<parking_lot::MutexGuard<'_, ()>> {
+    gate.lock_for(GpuQueueAccessMode::NonBlocking)
 }
 
 /// Validates the mapped frame size and returns `bytes_per_row`.
@@ -429,5 +448,20 @@ mod tests {
         let exact_len = rgba8_frame_bytes_usize(u32::MAX, 1).unwrap();
 
         assert_eq!(validated_frame_layout(7, u32::MAX, 1, exact_len), None);
+    }
+
+    #[test]
+    fn video_upload_gate_acquires_when_uncontended() {
+        let gate = GpuQueueAccessGate::new();
+
+        assert!(acquire_video_upload_gate(&gate).is_some());
+    }
+
+    #[test]
+    fn video_upload_gate_reports_busy_when_held() {
+        let gate = GpuQueueAccessGate::new();
+        let _held = gate.lock();
+
+        assert!(acquire_video_upload_gate(&gate).is_none());
     }
 }
