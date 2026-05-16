@@ -4,6 +4,8 @@ A modern Rust + wgpu renderer for [Resonite](https://store.steampowered.com/app/
 
 Also available as an [AUR package](https://aur.archlinux.org/packages/renderide-git).
 
+If you're interested in supporting my work, please consider donating on [Ko-Fi](https://ko-fi.com/DoubleStyx) or [GitHub Sponsors](https://github.com/sponsors/DoubleStyx).
+
 ## Status
 
 Experimental: performance, stability, and platform support are still evolving.
