@@ -171,6 +171,12 @@ Contributions are welcome. The workspace builds with the standard Cargo commands
 
 Read [`CONTRIBUTING.md`](CONTRIBUTING.md) to learn how to get started.
 
+## AI Policy
+
+Renderide does not accept AI-generated or AI-assisted contributions. Source code, shaders, documentation, tests, issues, pull requests, and review comments submitted to this repository must be authored by the human contributor without generative AI tools. Contributors found submitting AI-generated material or using AI to participate in the project may be blocked from future contribution.
+
+Renderide depends on upstream projects with their own contribution rules. For example, [`wgpu` explicitly allows LLM/AI-generated code](https://github.com/gfx-rs/wgpu/blob/trunk/CONTRIBUTING.md#llms-ai) when the pull request author accepts full ownership of the change. Renderide cannot impose this policy on upstream projects or dependencies; using those dependencies does not change the policy for contributions to this repository.
+
 ## License
 
 MIT - see [`LICENSE`](LICENSE).
