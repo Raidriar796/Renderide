@@ -27,12 +27,8 @@ impl CompiledRenderGraph {
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("graph::prepare_view_resources");
         // Derive each view's `PreRecordViewResourceLayout` once and reuse it across the four
-        // per-view sub-phases below. Previously every phase ran its own `viewport / stereo /
-        // depth_format / helper_needs / layout` recomputation; some of them rebuilt the same
-        // `Vec<PreRecordViewResourceLayout>` from scratch every frame.
-        //
-        // `Option<...>` is per-view so a swapchain whose depth target failed to resolve this
-        // tick maps to `None` and every phase short-circuits for that index in lock-step.
+        // per-view sub-phases below. A per-view `None` keeps depth-target resolution failures
+        // aligned across every phase for that index.
         let view_layouts: Vec<Option<PreRecordViewResourceLayout>> =
             build_view_layouts(mv_ctx, views);
         Self::pre_warm_per_view_resources_for_views(mv_ctx, views, &view_layouts)?;
@@ -158,9 +154,8 @@ impl CompiledRenderGraph {
         upload_batch: &FrameUploadBatch,
     ) {
         profiling::scope!("graph::pre_sync_frame_gpu");
-        // Reuse the precomputed layouts from `prepare_view_resources_for_views` instead of
-        // walking views again. Skips views whose depth target failed to resolve this tick
-        // (matching the prior behaviour of dropping them silently).
+        // Reuse the precomputed layouts from `prepare_view_resources_for_views` so every shared
+        // frame sync phase sees the same valid-view set.
         let layouts: Vec<PreRecordViewResourceLayout> =
             view_layouts.iter().filter_map(|layout| *layout).collect();
         mv_ctx

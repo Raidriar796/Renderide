@@ -11,6 +11,9 @@ use crate::child_lifetime::ChildLifetimeGroup;
 use crate::config::ResoBootConfig;
 use crate::paths;
 
+/// Runtime configuration file shipped next to `Renderite.Host.dll`.
+const RENDERITE_HOST_RUNTIME_CONFIG: &str = "Renderite.Host.runtimeconfig.json";
+
 /// Removes `Microsoft.WindowsDesktop.App` from `runtimeOptions.frameworks` for Wine compatibility.
 pub fn strip_windows_desktop_from_runtime_config(path: &Path) {
     if !path.exists() {
@@ -106,6 +109,21 @@ fn finish_spawn(mut cmd: Command, lifetime: &ChildLifetimeGroup) -> std::io::Res
     Ok(child)
 }
 
+/// Returns the runtimeconfig path for a native Host launch directory.
+fn host_runtime_config_path(resonite_dir: &Path) -> PathBuf {
+    resonite_dir.join(RENDERITE_HOST_RUNTIME_CONFIG)
+}
+
+/// Applies runtimeconfig adjustments needed before native Linux Host startup.
+#[cfg(target_os = "linux")]
+fn prepare_native_host_runtime_config(resonite_dir: &Path) {
+    strip_windows_desktop_from_runtime_config(&host_runtime_config_path(resonite_dir));
+}
+
+/// Keeps native Host startup preparation explicit on platforms without runtimeconfig edits.
+#[cfg(not(target_os = "linux"))]
+fn prepare_native_host_runtime_config(_resonite_dir: &Path) {}
+
 /// Raises Host process priority on Windows (ResoBoot `AboveNormal`).
 #[cfg(windows)]
 pub fn set_host_above_normal_priority(child: &Child) {
@@ -150,15 +168,7 @@ pub fn spawn_host(
             )
         })?;
         logger::info!("Resonite dir: {:?}", resonite_dir);
-        #[cfg(target_os = "linux")]
-        {
-            // Native Linux launches can still inherit a runtimeconfig that references
-            // Microsoft.WindowsDesktop.App; strip it so `dotnet` only resolves
-            // Microsoft.NETCore.App from the bundled runtime.
-            strip_windows_desktop_from_runtime_config(
-                &resonite_dir.join("Renderite.Host.runtimeconfig.json"),
-            );
-        }
+        prepare_native_host_runtime_config(&resonite_dir);
 
         let dotnet = paths::find_dotnet_for_host(&resonite_dir);
         let host_dll: PathBuf = resonite_dir.join(paths::RENDERITE_HOST_DLL);
@@ -190,6 +200,16 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::io::Cursor;
+
+    #[test]
+    fn host_runtime_config_path_uses_host_directory() {
+        let root = PathBuf::from("renderite-host");
+
+        assert_eq!(
+            host_runtime_config_path(&root),
+            root.join(RENDERITE_HOST_RUNTIME_CONFIG)
+        );
+    }
 
     #[test]
     fn strip_windows_desktop_noop_when_missing_file() {

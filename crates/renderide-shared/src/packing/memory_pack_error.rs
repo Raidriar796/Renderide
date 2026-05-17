@@ -7,8 +7,8 @@ use thiserror::Error;
 pub enum MemoryPackError {
     /// One or more writes were skipped because the destination buffer ran out of space.
     ///
-    /// The first `needed`/`remaining` pair is captured at the point of overflow; subsequent
-    /// writes silently no-op so the encoder cursor remains coherent.
+    /// The first `needed`/`remaining` pair is captured at the point of overflow; later writes are
+    /// ignored so the encoder cursor remains at the last complete value.
     #[error(
         "packer buffer too small: needed {needed} byte(s) for {ty}, {remaining} byte(s) remaining"
     )]
