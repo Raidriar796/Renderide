@@ -83,10 +83,6 @@ fn world_normal(draw: dt::PerDrawUniforms, n: vec4<f32>) -> vec3<f32> {
     return normalize(draw.normal_matrix * n.xyz);
 }
 
-fn world_normal_unnormalized(draw: dt::PerDrawUniforms, n: vec4<f32>) -> vec3<f32> {
-    return draw.normal_matrix * n.xyz;
-}
-
 fn model_vector(draw: dt::PerDrawUniforms, v: vec3<f32>) -> vec3<f32> {
     return (draw.model * vec4<f32>(v, 0.0)).xyz;
 }
