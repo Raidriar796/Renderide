@@ -25,9 +25,9 @@ use crate::shared::{
 /// **TrackingSpace** applies position/rotation offsets; compare IPC trace logs to **RawPosition**
 /// when debugging avatar alignment.
 /// `openxr_controllers` is filled from the same XR tick's `sync_actions` before `pre_frame` runs.
-/// `hands` carries per-finger [`HandState`] snapshots from OpenXR hand tracking or the controller
-/// synthesis fallback so the host avoids the idle-reset fallback in `HandPoser` when reliable hand
-/// data is available.
+/// `hands` carries per-finger [`HandState`] snapshots (synthesised from controller input by
+/// [`crate::xr::input::synthesize_hand_states`]) so the host avoids the idle-reset fallback in
+/// `HandPoser` and drives avatar fingers from tracked data.
 pub fn vr_inputs_for_session(
     session_output_device: HeadOutputDevice,
     head_pose: Option<(Vec3, Quat)>,

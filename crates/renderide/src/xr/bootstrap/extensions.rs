@@ -40,18 +40,6 @@ const OPTIONAL_EXTENSIONS: &[OpenxrExtensionEntry] = &[
         feeds_profile_gate: None,
     },
     OpenxrExtensionEntry {
-        log_name: "EXT_hand_tracking",
-        is_available: |set| set.ext_hand_tracking,
-        enable: |set, v| set.ext_hand_tracking = v,
-        feeds_profile_gate: None,
-    },
-    OpenxrExtensionEntry {
-        log_name: "EXT_hand_joints_motion_range",
-        is_available: |set| set.ext_hand_joints_motion_range,
-        enable: |set, v| set.ext_hand_joints_motion_range = v,
-        feeds_profile_gate: None,
-    },
-    OpenxrExtensionEntry {
         log_name: "KHR_generic_controller",
         is_available: |set| set.khr_generic_controller,
         enable: |set, v| set.khr_generic_controller = v,
@@ -158,8 +146,6 @@ mod tests {
         let mut set = xr::ExtensionSet::default();
         set.khr_vulkan_enable2 = true;
         set.ext_debug_utils = true;
-        set.ext_hand_tracking = true;
-        set.ext_hand_joints_motion_range = true;
         set.khr_generic_controller = true;
         set.bd_controller_interaction = true;
         set.ext_hp_mixed_reality_controller = true;
@@ -178,8 +164,6 @@ mod tests {
         let mut gates = empty_profile_gates();
         enable_optional_extensions(&available, &mut enabled, &mut gates);
         assert!(enabled.ext_debug_utils);
-        assert!(enabled.ext_hand_tracking);
-        assert!(enabled.ext_hand_joints_motion_range);
         assert!(enabled.khr_generic_controller);
         assert!(enabled.bd_controller_interaction);
         assert!(enabled.ext_hp_mixed_reality_controller);
@@ -213,8 +197,6 @@ mod tests {
         let mut gates = empty_profile_gates();
         enable_optional_extensions(&available, &mut enabled, &mut gates);
         assert!(!enabled.ext_debug_utils);
-        assert!(!enabled.ext_hand_tracking);
-        assert!(!enabled.ext_hand_joints_motion_range);
         assert!(!enabled.khr_generic_controller);
         assert!(!gates.khr_generic_controller);
         assert!(!gates.bd_controller);
@@ -239,8 +221,7 @@ mod tests {
         let summary = enabled_extension_summary(&enabled);
         assert_eq!(
             summary,
-            "KHR_vulkan_enable2,EXT_debug_utils,EXT_hand_tracking,\
-             EXT_hand_joints_motion_range,KHR_generic_controller,\
+            "KHR_vulkan_enable2,EXT_debug_utils,KHR_generic_controller,\
              BD_controller_interaction,EXT_hp_mixed_reality_controller,\
              EXT_samsung_odyssey_controller,HTC_vive_cosmos_controller_interaction,\
              HTC_vive_focus3_controller_interaction,FB_touch_controller_pro,\
@@ -253,12 +234,11 @@ mod tests {
         let mut enabled = xr::ExtensionSet::default();
         enabled.khr_vulkan_enable2 = true;
         enabled.ext_debug_utils = true;
-        enabled.ext_hand_tracking = true;
         enabled.bd_controller_interaction = true;
         let summary = enabled_extension_summary(&enabled);
         assert_eq!(
             summary,
-            "KHR_vulkan_enable2,EXT_debug_utils,EXT_hand_tracking,BD_controller_interaction"
+            "KHR_vulkan_enable2,EXT_debug_utils,BD_controller_interaction"
         );
     }
 

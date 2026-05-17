@@ -5,7 +5,7 @@ use glam::{Quat, Vec3};
 use crate::diagnostics::gpu_flight_recorder::GpuFlightRecorder;
 use crate::frontend::input::vr_inputs_for_session;
 use crate::gpu::GpuQueueAccessGate;
-use crate::shared::{HandState, HeadOutputDevice, OutputState, VRControllerState, VRInputsState};
+use crate::shared::{HeadOutputDevice, OutputState, VRControllerState, VRInputsState};
 use crate::xr::{OpenxrFrameTick, synthesize_hand_states};
 
 use super::AppDriver;
@@ -16,24 +16,18 @@ use std::sync::Arc;
 pub(super) struct XrInputCache {
     head_pose: Option<(Vec3, Quat)>,
     controllers: Vec<VRControllerState>,
-    hands: Vec<HandState>,
 }
 
 impl XrInputCache {
     /// Builds host-facing VR input for the current session output device.
     pub(super) fn build_vr_input(&self, output_device: HeadOutputDevice) -> Option<VRInputsState> {
-        let hands = self.hand_states_for_ipc();
-        vr_inputs_for_session(output_device, self.head_pose, &self.controllers, hands)
-    }
-
-    /// Selects real OpenXR hand-joint data when available, otherwise falls back to synthesis.
-    fn hand_states_for_ipc(&self) -> Vec<HandState> {
-        if self.hands.is_empty() {
-            log_synthetic_hand_source_once();
-            synthesize_hand_states(&self.controllers)
-        } else {
-            self.hands.clone()
-        }
+        let synthesised_hands = synthesize_hand_states(&self.controllers);
+        vr_inputs_for_session(
+            output_device,
+            self.head_pose,
+            &self.controllers,
+            synthesised_hands,
+        )
     }
 }
 
@@ -101,10 +95,7 @@ impl AppDriver {
             session.handles.xr_session.stage_space(),
             tick.predicted_display_time,
         ) {
-            Ok(sample) => {
-                self.xr_input_cache.controllers = sample.controllers;
-                self.xr_input_cache.hands = sample.hands;
-            }
+            Ok(controllers) => self.xr_input_cache.controllers = controllers,
             Err(error) => logger::trace!("OpenXR input sync: {error:?}"),
         }
     }
@@ -196,107 +187,4 @@ fn trace_head_pose(tick: &OpenxrFrameTick, (ipc_p, ipc_q): (Vec3, Quat)) {
         ipc_q.z,
         ipc_q.w,
     );
-}
-
-fn log_synthetic_hand_source_once() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    static LOGGED: AtomicBool = AtomicBool::new(false);
-    if !LOGGED.swap(true, Ordering::Relaxed) {
-        logger::info!("OpenXR hand input: using synthesized controller poses for IPC hand poses");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::shared::{BodyNode, Chirality, IndexControllerState, TouchControllerState};
-
-    fn tracked_touch_controller(side: Chirality) -> VRControllerState {
-        VRControllerState::TouchControllerState(TouchControllerState {
-            side,
-            body_node: match side {
-                Chirality::Left => BodyNode::LeftController,
-                Chirality::Right => BodyNode::RightController,
-            },
-            is_device_active: true,
-            is_tracking: true,
-            rotation: Quat::IDENTITY,
-            battery_level: 1.0,
-            ..Default::default()
-        })
-    }
-
-    fn tracked_index_controller(side: Chirality) -> VRControllerState {
-        VRControllerState::IndexControllerState(IndexControllerState {
-            side,
-            body_node: match side {
-                Chirality::Left => BodyNode::LeftController,
-                Chirality::Right => BodyNode::RightController,
-            },
-            is_device_active: true,
-            is_tracking: true,
-            rotation: Quat::IDENTITY,
-            battery_level: 1.0,
-            ..Default::default()
-        })
-    }
-
-    fn tracked_hand(unique_id: &str, side: Chirality) -> HandState {
-        HandState {
-            unique_id: Some(unique_id.to_string()),
-            chirality: side,
-            is_device_active: true,
-            is_tracking: true,
-            tracks_metacarpals: true,
-            confidence: 1.0,
-            segment_positions: vec![Vec3::ZERO; 24],
-            segment_rotations: vec![Quat::IDENTITY; 24],
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn real_hand_states_win_over_controller_synthesis() {
-        let cache = XrInputCache {
-            controllers: vec![tracked_touch_controller(Chirality::Left)],
-            hands: vec![tracked_hand("tracked-left", Chirality::Left)],
-            ..Default::default()
-        };
-
-        let hands = cache.hand_states_for_ipc();
-
-        assert_eq!(hands.len(), 1);
-        assert_eq!(hands[0].unique_id.as_deref(), Some("tracked-left"));
-        assert!(hands[0].tracks_metacarpals);
-    }
-
-    #[test]
-    fn empty_real_hands_use_controller_synthesis() {
-        let cache = XrInputCache {
-            controllers: vec![tracked_touch_controller(Chirality::Right)],
-            ..Default::default()
-        };
-
-        let hands = cache.hand_states_for_ipc();
-
-        assert_eq!(hands.len(), 1);
-        assert_eq!(hands[0].chirality, Chirality::Right);
-        assert!(!hands[0].tracks_metacarpals);
-    }
-
-    #[test]
-    fn index_controller_synthesis_is_suppressed_without_real_hands() {
-        let cache = XrInputCache {
-            controllers: vec![tracked_index_controller(Chirality::Left)],
-            ..Default::default()
-        };
-
-        let hands = cache.hand_states_for_ipc();
-
-        assert!(
-            hands.is_empty(),
-            "Index fallback must wait for real OpenXR hand joints"
-        );
-    }
 }
