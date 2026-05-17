@@ -8,8 +8,10 @@ use glam::{Vec3, Vec4};
 pub(crate) fn srgb_channel_to_linear(value: f32) -> f32 {
     if value <= 0.04045 {
         value / 12.92
-    } else {
+    } else if value < 1.0 {
         ((value + 0.055) / 1.055).powf(2.4)
+    } else {
+        value.powf(2.2)
     }
 }
 
@@ -47,10 +49,10 @@ mod tests {
     const EPS: f32 = 0.000_001;
 
     #[test]
-    fn srgb_channel_conversion_matches_standard_curve() {
+    fn srgb_channel_conversion_matches_transfer_curve() {
         assert!((srgb_channel_to_linear(0.5) - 0.214_041_14).abs() < EPS);
         assert!((srgb_channel_to_linear(0.04045) - (0.04045 / 12.92)).abs() < EPS);
-        assert!((srgb_channel_to_linear(1.25) - 1.665_939_9).abs() < EPS);
+        assert!((srgb_channel_to_linear(1.25) - 1.633_811_8).abs() < EPS);
         assert!((srgb_channel_to_linear(-0.5) - (-0.5 / 12.92)).abs() < EPS);
     }
 
@@ -60,7 +62,7 @@ mod tests {
 
         assert!((linear.x - 0.214_041_14).abs() < EPS);
         assert!((linear.y - (0.04045 / 12.92)).abs() < EPS);
-        assert!((linear.z - 1.665_939_9).abs() < EPS);
+        assert!((linear.z - 1.633_811_8).abs() < EPS);
         assert_eq!(linear.w, 0.33);
     }
 
@@ -70,7 +72,7 @@ mod tests {
 
         assert!((linear[0] - (-0.5 / 12.92)).abs() < EPS);
         assert!((linear[1] - (0.04045 / 12.92)).abs() < EPS);
-        assert!((linear[2] - 1.665_939_9).abs() < EPS);
+        assert!((linear[2] - 1.633_811_8).abs() < EPS);
         assert_eq!(linear[3], 0.33);
     }
 }
