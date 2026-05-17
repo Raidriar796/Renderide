@@ -30,6 +30,7 @@
 //#mat_default _EmissionColorTo vec4 1.5 1.5 1.5 0.0
 //#mat_default _EmissionDistanceFrom float 1.0
 //#mat_default _NormalScale float 1.0
+//#mat_default _Glossiness float 0.5
 
 #import renderide::mesh::vertex as mv
 #import renderide::draw::per_draw as pd

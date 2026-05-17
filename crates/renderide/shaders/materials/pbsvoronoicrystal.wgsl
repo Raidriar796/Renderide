@@ -17,6 +17,10 @@
 //#mat_default _EdgeNormalStrength float 0.5
 //#mat_default _NormalStrength float 1.0
 //#mat_default _Scale vec4 1.0 1.0 0.0 0.0
+//#mat_default _Glossiness float 0.5
+//#mat_default _EdgeGloss float 0.8
+//#mat_default _EdgeMetallic float 0.1
+//#mat_default _EdgeThickness float 0.1
 
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv

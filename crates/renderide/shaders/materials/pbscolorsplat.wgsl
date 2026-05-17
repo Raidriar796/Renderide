@@ -32,6 +32,8 @@
 //#mat_default _NormalScale1 float 1.0
 //#mat_default _NormalScale2 float 1.0
 //#mat_default _NormalScale3 float 1.0
+//#mat_default _Glossiness float 0.5
+//#mat_default _HeightTransitionRange float 0.1
 
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv

@@ -11,6 +11,7 @@
 //#mat_default _FarColor vec4 1.0 1.0 1.0 1.0
 //#mat_default _NearColor vec4 1.0 1.0 1.0 1.0
 //#mat_default _Transition float 0.1
+//#mat_default _Cutoff float 0.5
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd

@@ -12,6 +12,7 @@
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
 //#mat_default _NormalScale float 1.0
 //#mat_default _TriBlendPower float 4.0
+//#mat_default _Glossiness float 0.5
 
 #import renderide::draw::per_draw as pd
 #import renderide::material::variant_bits as vb

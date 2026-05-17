@@ -16,6 +16,8 @@
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
 //#mat_default _NormalScale float 1.0
 //#mat_default _RimColor vec4 1.0 0.0 0.0 1.0
+//#mat_default _Glossiness float 0.5
+//#mat_default _RimPower float 3.0
 
 #import renderide::frame::globals as rg
 #import renderide::material::fresnel as mf

@@ -19,6 +19,7 @@
 //#mat_default _OverlayTint vec4 1.0 1.0 1.0 0.5
 //#mat_default _Rect vec4 0.0 0.0 1.0 1.0
 //#mat_default _Tint vec4 1.0 1.0 1.0 1.0
+//#mat_default _Cutoff float 0.98
 
 #import renderide::core::texture_sampling as ts
 #import renderide::frame::globals as rg

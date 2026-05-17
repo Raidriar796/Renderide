@@ -15,6 +15,7 @@
 //#mat_default _OffsetMagnitude vec4 0.1 0.1 0.0 0.0
 //#mat_default _PointSize vec4 0.1 0.1 0.0 0.0
 //#mat_default _PolarPow float 1.0
+//#mat_default _Cutoff float 0.5
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd

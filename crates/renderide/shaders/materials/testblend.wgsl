@@ -7,6 +7,9 @@
 //#texture_default _MainTex white
 //#texture_default _MainTex2 white
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _CutOff float 0.5
+//#mat_default _Glossiness float 0.5
+//#mat_default _Lerp float 0.5
 
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv

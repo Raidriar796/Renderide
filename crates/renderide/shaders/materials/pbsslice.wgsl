@@ -24,6 +24,8 @@
 //#mat_default _EdgeEmissionColor vec4 1.0 1.0 1.0 1.0
 //#mat_default _EdgeTransitionEnd float 0.1
 //#mat_default _NormalScale float 1.0
+//#mat_default _AlphaClip float 0.5
+//#mat_default _Glossiness float 0.5
 
 #import renderide::mesh::vertex as mv
 #import renderide::material::variant_bits as vb

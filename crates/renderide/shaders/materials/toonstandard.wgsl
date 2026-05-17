@@ -16,6 +16,10 @@
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
 //#mat_default _Fresnel float 1.0
 //#mat_default _FresnelTint vec4 1.0 1.0 1.0 1.0
+//#mat_default _Glossiness float 0.5
+//#mat_default _FresnelDiffCont float 0.5
+//#mat_default _FresnelPower float 0.5
+//#mat_default _FresnelStrength float 0.2
 
 #import renderide::lighting::birp as bl
 #import renderide::frame::globals as rg

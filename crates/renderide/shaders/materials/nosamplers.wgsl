@@ -11,6 +11,7 @@
 //#texture_default _EmissionMap white
 //#texture_default _EmissionMap1 white
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _Glossiness float 0.5
 
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv

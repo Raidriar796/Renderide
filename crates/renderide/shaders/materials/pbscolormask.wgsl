@@ -21,6 +21,7 @@
 //#mat_default _Color2 vec4 0.0 0.0 1.0 1.0
 //#mat_default _Color3 vec4 1.0 1.0 1.0 1.0
 //#mat_default _NormalScale float 1.0
+//#mat_default _Glossiness float 0.5
 
 #import renderide::material::variant_bits as vb
 #import renderide::material::color as mcolor

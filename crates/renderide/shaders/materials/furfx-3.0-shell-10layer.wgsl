@@ -11,6 +11,11 @@
 //#mat_default _ReflMinLevel float 0.0
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
 //#mat_default _SpecColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _HairColoring float 0.1
+//#mat_default _HairHardness float 1.0
+//#mat_default _HairShading float 0.25
+//#mat_default _HairThinness float 2.0
+//#mat_default _RimPower float 4.0
 
 #import renderide::fur::modern as fur
 #import renderide::fur::common as furc

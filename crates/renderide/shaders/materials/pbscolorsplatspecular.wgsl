@@ -35,6 +35,7 @@
 //#mat_default _SpecularColor1 vec4 0.5 0.5 0.5 0.5
 //#mat_default _SpecularColor2 vec4 0.5 0.5 0.5 0.5
 //#mat_default _SpecularColor3 vec4 0.5 0.5 0.5 0.5
+//#mat_default _HeightTransitionRange float 0.1
 
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv

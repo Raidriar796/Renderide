@@ -27,6 +27,8 @@
 //#mat_default _DetailNormalMapScale float 1.0
 //#mat_default _EmissionColor vec4 0.0 0.0 0.0 1.0
 //#mat_default _SpecColor vec4 0.2 0.2 0.2 1.0
+//#mat_default _Cutoff float 0.5
+//#mat_default _Glossiness float 0.5
 
 #import renderide::mesh::vertex as mv
 #import renderide::material::variant_bits as vb

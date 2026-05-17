@@ -26,6 +26,8 @@
 //#mat_default _PositionOffsetMagnitude vec4 1.0 1.0 0.0 0.0
 //#mat_default _UVOffsetMagnitude float 0.1
 //#mat_default _VertexOffsetMagnitude float 0.1
+//#mat_default _AlphaClip float 0.5
+//#mat_default _Glossiness float 0.5
 
 #import renderide::mesh::vertex as mv
 #import renderide::draw::per_draw as pd

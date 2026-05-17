@@ -14,6 +14,9 @@
 //#mat_default _SkyTint vec4 0.5 0.5 0.5 1.0
 //#mat_default _SunColor vec4 1.0 1.0 1.0 1.0
 //#mat_default _SunDirection vec4 0.577 0.577 0.577 0.0
+//#mat_default _AtmosphereThickness float 1.0
+//#mat_default _Exposure float 1.3
+//#mat_default _SunSize float 0.04
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
