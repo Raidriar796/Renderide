@@ -105,6 +105,7 @@ impl CompiledRenderGraph {
         per_view_work_items: Vec<PerViewWorkItem>,
         inputs: PerViewRecordInputs<'_>,
     ) -> Result<Vec<PerViewRecordOutput>, GraphExecuteError> {
+        profiling::scope!("graph::per_view_fan_out::two_view_join");
         let PerViewRecordInputs {
             transient_by_key,
             upload_batch,
@@ -118,6 +119,7 @@ impl CompiledRenderGraph {
         debug_assert!(extra.is_none());
         let (first, second) = rayon::join(
             || {
+                profiling::scope!("graph::per_view_fan_out::two_view_worker");
                 self.record_per_view_work_item_output(
                     first,
                     transient_by_key,
@@ -127,6 +129,7 @@ impl CompiledRenderGraph {
                 )
             },
             || {
+                profiling::scope!("graph::per_view_fan_out::two_view_worker");
                 self.record_per_view_work_item_output(
                     second,
                     transient_by_key,

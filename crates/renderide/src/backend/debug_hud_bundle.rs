@@ -5,8 +5,9 @@ use std::path::PathBuf;
 
 use crate::config::RendererSettingsHandle;
 use crate::diagnostics::{
-    DebugHud, DebugHudEncodeError, DebugHudInput, FrameDiagnosticsSnapshot, FrameTimingHudSnapshot,
-    PerViewHudOutputs, RendererInfoSnapshot, SceneTransformsSnapshot, TextureDebugSnapshot,
+    DebugHud, DebugHudEncodeError, DebugHudInput, DebugHudOverlayContext, FrameDiagnosticsSnapshot,
+    FrameTimingHudSnapshot, PerViewHudOutputs, RendererInfoSnapshot, SceneTransformsSnapshot,
+    TextureDebugSnapshot,
 };
 use crate::world_mesh::{WorldMeshDrawStateRow, WorldMeshDrawStats};
 
@@ -251,11 +252,22 @@ impl DebugHudBundle {
         encoder: &mut wgpu::CommandEncoder,
         backbuffer: &wgpu::TextureView,
         extent: (u32, u32),
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) -> Result<(), DebugHudEncodeError> {
         let Some(hud) = self.hud.as_mut() else {
             return Ok(());
         };
-        match hud.encode_overlay(device, queue, encoder, backbuffer, extent, &self.input) {
+        match hud.encode_overlay(
+            DebugHudOverlayContext {
+                device,
+                queue,
+                encoder,
+                backbuffer,
+                extent,
+                profiler,
+            },
+            &self.input,
+        ) {
             Ok((want_mouse, want_keyboard)) => {
                 self.want_capture_mouse = want_mouse;
                 self.want_capture_keyboard = want_keyboard;

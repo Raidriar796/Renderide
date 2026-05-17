@@ -122,9 +122,10 @@ impl CompiledRenderGraph {
             return Ok(());
         }
 
-        let Some((mut swapchain_scope, backbuffer_view_holder)) =
+        let Some((mut swapchain_scope, backbuffer_view_holder)) = ({
+            profiling::scope!("graph::enter_swapchain_scope");
             self.enter_swapchain_scope_for_views(gpu, views)?
-        else {
+        }) else {
             return Ok(());
         };
 
@@ -153,7 +154,10 @@ impl CompiledRenderGraph {
         // per-view recording begins. The record loop then reads `transient_by_key` without
         // touching the shared transient pool.
         let pre_resolve_start = Instant::now();
-        self.pre_resolve_transients_for_views(&mut mv_ctx, views, &mut transient_by_key)?;
+        {
+            profiling::scope!("graph::pre_resolve_transients_for_views");
+            self.pre_resolve_transients_for_views(&mut mv_ctx, views, &mut transient_by_key)?;
+        }
         command_diagnostics.pre_resolve_ms = elapsed_ms(pre_resolve_start);
         command_diagnostics.transient_delta = TransientPoolMetricsDelta::from_metrics(
             transient_metrics_before,
@@ -164,30 +168,18 @@ impl CompiledRenderGraph {
         // Drained onto the main thread after all recording completes and before submit.
         let upload_batch = FrameUploadBatch::new();
 
-        // Shared frame resources, per-view slots, mesh extended streams, and world-mesh packets
-        // are prepared up front so later per-view recording can run with read-only shared state
-        // plus per-view interior mutability.
-        let prepare_resources_start = Instant::now();
-        Self::prepare_view_resources_for_views(&mut mv_ctx, views, &upload_batch)?;
-        let mut per_view_work_items = self.prepare_per_view_work_items(&mut mv_ctx, views)?;
-        self.prepare_view_blackboards_for_work_items(
-            &mv_ctx,
-            &mut per_view_work_items,
-            &upload_batch,
-        );
-        command_diagnostics.prepare_resources_ms = elapsed_ms(prepare_resources_start);
+        let (per_view_work_items, prepare_resources_ms) =
+            self.prepare_resources_and_work_items(&mut mv_ctx, views, &upload_batch)?;
+        command_diagnostics.prepare_resources_ms = prepare_resources_ms;
 
         // -- Frame-global pass (optional) -----------------------------------------------------
-        let frame_global_cmd = self.encode_frame_global_passes(
+        let frame_global_cmd = self.encode_frame_global_command(
             &mut mv_ctx,
             views,
             &mut transient_by_key,
             &upload_batch,
+            &mut command_diagnostics,
         )?;
-        let frame_global_cmd = frame_global_cmd.map(|command| {
-            command_diagnostics.apply_frame_global(&command);
-            command.command_buffer
-        });
 
         // -- Per-view recording (no submit per view) ------------------------------------------
         let RecordedPerViewBatch {
@@ -197,6 +189,7 @@ impl CompiledRenderGraph {
             per_view_profiler_cmd,
             ..
         } = {
+            profiling::scope!("graph::record_per_view_batch");
             let batch = self.record_per_view_batch(
                 &mut mv_ctx,
                 per_view_work_items,
@@ -207,31 +200,89 @@ impl CompiledRenderGraph {
             batch
         };
 
-        let submit_stats = self.submit_frame_batch(
-            &mut mv_ctx,
-            SubmitFrameInputs {
-                views,
-                frame_global_cmd,
-                per_view_cmds,
-                per_view_profiler_cmd,
-                per_view_hud_outputs,
-                per_view_occlusion_info: &per_view_occlusion_info,
-                swapchain_scope: &mut swapchain_scope,
-                backbuffer_view_holder: &backbuffer_view_holder,
-                upload_batch: &upload_batch,
-                queue_arc: &queue_arc,
-            },
-        )?;
+        let submit_stats = {
+            profiling::scope!("graph::submit_frame_batch");
+            self.submit_frame_batch(
+                &mut mv_ctx,
+                SubmitFrameInputs {
+                    views,
+                    frame_global_cmd,
+                    per_view_cmds,
+                    per_view_profiler_cmd,
+                    per_view_hud_outputs,
+                    per_view_occlusion_info: &per_view_occlusion_info,
+                    swapchain_scope: &mut swapchain_scope,
+                    backbuffer_view_holder: &backbuffer_view_holder,
+                    upload_batch: &upload_batch,
+                    queue_arc: &queue_arc,
+                },
+            )?
+        };
         command_diagnostics.apply_submit(submit_stats);
-        command_diagnostics.record_flight_event(mv_ctx.gpu);
-        command_diagnostics.plot();
-        command_diagnostics.log_if_slow();
+        {
+            profiling::scope!("graph::command_diagnostics");
+            command_diagnostics.record_flight_event(mv_ctx.gpu);
+            command_diagnostics.plot();
+            command_diagnostics.log_if_slow();
+        }
 
-        self.run_post_submit_passes(&mut mv_ctx, views, device, &per_view_occlusion_info)?;
+        {
+            profiling::scope!("graph::run_post_submit_passes");
+            self.run_post_submit_passes(&mut mv_ctx, views, device, &per_view_occlusion_info)?;
+        }
 
-        release_transients_and_gc(&mut mv_ctx, transient_by_key);
+        {
+            profiling::scope!("graph::release_transients_and_gc");
+            release_transients_and_gc(&mut mv_ctx, transient_by_key);
+        }
 
         Ok(())
+    }
+
+    /// Prepares shared frame resources and owned per-view work packets before recording.
+    fn prepare_resources_and_work_items(
+        &self,
+        mv_ctx: &mut MultiViewExecutionContext<'_>,
+        views: &mut [FrameView<'_>],
+        upload_batch: &FrameUploadBatch,
+    ) -> Result<(Vec<PerViewWorkItem>, f64), GraphExecuteError> {
+        let prepare_resources_start = Instant::now();
+        {
+            profiling::scope!("graph::prepare_resources_for_views");
+            Self::prepare_view_resources_for_views(mv_ctx, views, upload_batch)?;
+        }
+        let mut per_view_work_items = {
+            profiling::scope!("graph::prepare_work_items");
+            self.prepare_per_view_work_items(mv_ctx, views)?
+        };
+        {
+            profiling::scope!("graph::prepare_view_blackboards_for_work_items");
+            self.prepare_view_blackboards_for_work_items(
+                mv_ctx,
+                &mut per_view_work_items,
+                upload_batch,
+            );
+        }
+        Ok((per_view_work_items, elapsed_ms(prepare_resources_start)))
+    }
+
+    /// Records optional frame-global graph work and folds its diagnostics into the frame report.
+    fn encode_frame_global_command(
+        &self,
+        mv_ctx: &mut MultiViewExecutionContext<'_>,
+        views: &[FrameView<'_>],
+        transient_by_key: &mut HashMap<GraphResolveKey, GraphResolvedResources>,
+        upload_batch: &FrameUploadBatch,
+        command_diagnostics: &mut CommandEncodingDiagnostics,
+    ) -> Result<Option<wgpu::CommandBuffer>, GraphExecuteError> {
+        let frame_global_cmd = {
+            profiling::scope!("graph::encode_frame_global_batch");
+            self.encode_frame_global_passes(mv_ctx, views, transient_by_key, upload_batch)?
+        };
+        Ok(frame_global_cmd.map(|command| {
+            command_diagnostics.apply_frame_global(&command);
+            command.command_buffer
+        }))
     }
 
     /// Enters [`SwapchainScope`] for `views` if any target the swapchain; `Ok(None)` signals a frame skip.
@@ -419,6 +470,7 @@ impl CompiledRenderGraph {
     ) {
         profiling::scope!("graph::prepare_view_blackboards");
         for work_item in work_items.iter_mut() {
+            profiling::scope!("graph::prepare_view_blackboard");
             let resolved = work_item.resolved.as_resolved();
             let hi_z_slot = mv_ctx
                 .backend

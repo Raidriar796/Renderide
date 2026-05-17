@@ -286,21 +286,27 @@ pub(super) fn collect_prepared_chunk(
     cache: &FrameMaterialBatchCache,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
 ) -> (Vec<WorldMeshDrawItem>, (usize, usize, usize)) {
-    let chunk_draws = runs
-        .first()
-        .and_then(|first| runs.last().map(|last| last.end - first.start))
-        .unwrap_or(0) as usize;
+    profiling::scope!("mesh::collect_prepared::chunk");
+    let chunk_draws = {
+        profiling::scope!("mesh::collect_prepared::chunk_capacity");
+        runs.first()
+            .and_then(|first| runs.last().map(|last| last.end - first.start))
+            .unwrap_or(0) as usize
+    };
     let mut out: Vec<WorldMeshDrawItem> = Vec::with_capacity(chunk_draws);
     let mut cull_stats = (0usize, 0usize, 0usize);
 
-    for prepared_run in runs {
-        let start = prepared_run.start as usize;
-        let end = prepared_run.end as usize;
-        let run = &draws[start..end];
-        let run_stats = collect_prepared_renderer_run(run, ctx, cache, filter_masks, &mut out);
-        cull_stats.0 += run_stats.0;
-        cull_stats.1 += run_stats.1;
-        cull_stats.2 += run_stats.2;
+    {
+        profiling::scope!("mesh::collect_prepared::renderer_runs");
+        for prepared_run in runs {
+            let start = prepared_run.start as usize;
+            let end = prepared_run.end as usize;
+            let run = &draws[start..end];
+            let run_stats = collect_prepared_renderer_run(run, ctx, cache, filter_masks, &mut out);
+            cull_stats.0 += run_stats.0;
+            cull_stats.1 += run_stats.1;
+            cull_stats.2 += run_stats.2;
+        }
     }
 
     (out, cull_stats)

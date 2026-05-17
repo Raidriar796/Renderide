@@ -74,7 +74,13 @@ impl SkyboxIblConvolver {
         let mut resources = PendingBakeResources::default();
         resources.textures.push(source_cube.texture.clone());
         resources.source_sample_view = Some(source_sample_view.clone());
-        copy_cube_mip0(encoder, texture, source_cube.texture.as_ref(), face_size);
+        copy_cube_mip0(
+            encoder,
+            texture,
+            source_cube.texture.as_ref(),
+            face_size,
+            profiler,
+        );
         encode_downsample_mips(
             DownsampleEncodeContext {
                 device: gpu.device(),

@@ -18,10 +18,21 @@ pub(super) fn copy_layer(
     array_layer: u32,
     right_eye: bool,
 ) {
+    let label = if right_eye {
+        "hi_z::copy_pyramid_to_staging.right"
+    } else {
+        "hi_z::copy_pyramid_to_staging.left"
+    };
+    let copy_query = session
+        .profiler
+        .map(|p| p.begin_query(label, session.encoder));
     let (bw, bh) = session.scratch.extent;
     let mip_levels = session.scratch.mip_levels;
     let staging = if right_eye {
         let Some(staging_r) = session.scratch.staging_right() else {
+            if let (Some(p), Some(q)) = (session.profiler, copy_query) {
+                p.end_query(session.encoder, q);
+            }
             return;
         };
         &staging_r[ws]
@@ -37,6 +48,9 @@ pub(super) fn copy_layer(
         mip_levels,
         staging,
     );
+    if let (Some(p), Some(q)) = (session.profiler, copy_query) {
+        p.end_query(session.encoder, q);
+    }
 }
 
 /// Copies all mips for one history texture array layer into the selected readback staging buffer.

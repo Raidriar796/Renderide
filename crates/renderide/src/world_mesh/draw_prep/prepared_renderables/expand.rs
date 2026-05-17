@@ -191,6 +191,7 @@ pub(in crate::world_mesh::draw_prep) fn expand_space_into(
     render_context: RenderingContext,
     space_id: RenderSpaceId,
 ) {
+    profiling::scope!("mesh::prepared_renderables::expand_space");
     let Some(space) = scene.space(space_id) else {
         return;
     };
@@ -220,6 +221,7 @@ pub(in crate::world_mesh::draw_prep) fn expand_space_into_aggressive(
     render_context: RenderingContext,
     space_id: RenderSpaceId,
 ) {
+    profiling::scope!("mesh::prepared_renderables::expand_space_aggressive");
     if renderer_count_for_space(scene, space_id) < PREPARED_EXPAND_PARALLEL_MIN_RENDERERS {
         expand_space_into(out, scene, mesh_pool, render_context, space_id);
         return;
@@ -242,6 +244,7 @@ fn expand_space_into_parallel_chunks(
     render_context: RenderingContext,
     space_id: RenderSpaceId,
 ) {
+    profiling::scope!("mesh::prepared_renderables::expand_parallel_chunks");
     let Some(space) = scene.space(space_id) else {
         return;
     };
@@ -249,23 +252,29 @@ fn expand_space_into_parallel_chunks(
         return;
     }
     let mut specs = Vec::new();
-    push_expansion_chunks(
-        &mut specs,
-        ExpansionChunkKind::Static,
-        space.static_mesh_renderers().len(),
-    );
-    push_expansion_chunks(
-        &mut specs,
-        ExpansionChunkKind::Skinned,
-        space.skinned_mesh_renderers().len(),
-    );
+    {
+        profiling::scope!("mesh::prepared_renderables::build_renderer_chunks");
+        push_expansion_chunks(
+            &mut specs,
+            ExpansionChunkKind::Static,
+            space.static_mesh_renderers().len(),
+        );
+        push_expansion_chunks(
+            &mut specs,
+            ExpansionChunkKind::Skinned,
+            space.skinned_mesh_renderers().len(),
+        );
+    }
     if specs.len() < 2 {
         expand_space_into(out, scene, mesh_pool, render_context, space_id);
         return;
     }
 
-    if chunk_scratch.len() < specs.len() {
-        chunk_scratch.resize_with(specs.len(), Vec::new);
+    {
+        profiling::scope!("mesh::prepared_renderables::resize_chunk_scratch");
+        if chunk_scratch.len() < specs.len() {
+            chunk_scratch.resize_with(specs.len(), Vec::new);
+        }
     }
     chunk_scratch
         .par_iter_mut()
@@ -278,14 +287,17 @@ fn expand_space_into_parallel_chunks(
             expand_space_chunk_into(chunk_out, scene, mesh_pool, render_context, space_id, spec);
         });
 
-    let total = chunk_scratch
-        .iter()
-        .take(specs.len())
-        .map(Vec::len)
-        .sum::<usize>();
-    out.reserve(total);
-    for chunk in chunk_scratch.iter_mut().take(specs.len()) {
-        out.append(chunk);
+    {
+        profiling::scope!("mesh::prepared_renderables::merge_renderer_chunks");
+        let total = chunk_scratch
+            .iter()
+            .take(specs.len())
+            .map(Vec::len)
+            .sum::<usize>();
+        out.reserve(total);
+        for chunk in chunk_scratch.iter_mut().take(specs.len()) {
+            out.append(chunk);
+        }
     }
 }
 
@@ -329,12 +341,14 @@ impl<'a> ExpandCtx<'a> {
 }
 
 fn expand_static_list(mut ctx: ExpandCtx<'_>, renderers: &[StaticMeshRenderer]) {
+    profiling::scope!("mesh::prepared_renderables::expand_static_list");
     for (renderable_index, r) in renderers.iter().enumerate() {
         try_expand_one_renderer(&mut ctx, renderable_index, r, /*skinned=*/ false, None);
     }
 }
 
 fn expand_skinned_list(mut ctx: ExpandCtx<'_>, renderers: &[SkinnedMeshRenderer]) {
+    profiling::scope!("mesh::prepared_renderables::expand_skinned_list");
     for (renderable_index, sk) in renderers.iter().enumerate() {
         try_expand_one_renderer(
             &mut ctx,
@@ -354,6 +368,7 @@ fn expand_space_chunk_into(
     space_id: RenderSpaceId,
     spec: &ExpansionChunkSpec,
 ) {
+    profiling::scope!("mesh::prepared_renderables::expand_renderer_chunk");
     let Some(space) = scene.space(space_id) else {
         return;
     };

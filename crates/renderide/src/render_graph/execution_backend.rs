@@ -281,6 +281,7 @@ pub trait GraphExecutionBackend {
         encoder: &mut wgpu::CommandEncoder,
         backbuffer: &wgpu::TextureView,
         extent: (u32, u32),
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) -> Result<(), DebugHudEncodeError>;
     /// Clears cached input-capture state when HUD encoding is skipped.
     fn clear_debug_hud_input_capture(&mut self);

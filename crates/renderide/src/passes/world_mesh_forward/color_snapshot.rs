@@ -5,6 +5,7 @@ use crate::render_graph::frame_params::GraphPassFrame;
 use crate::world_mesh::WorldMeshHelperNeeds;
 
 use super::PreparedWorldMeshForwardFrame;
+use crate::profiling::GpuProfilerHandle;
 
 use super::WorldMeshForwardGraphResources;
 
@@ -16,6 +17,7 @@ pub(crate) fn encode_world_mesh_forward_color_snapshot(
     frame: &GraphPassFrame<'_>,
     prepared: &PreparedWorldMeshForwardFrame,
     resources: WorldMeshForwardGraphResources,
+    profiler: Option<&GpuProfilerHandle>,
 ) -> bool {
     profiling::scope!("world_mesh_forward::encode_color_snapshot");
     if !color_snapshot_recording_needed(prepared.helper_needs) {
@@ -32,7 +34,9 @@ pub(crate) fn encode_world_mesh_forward_color_snapshot(
         logger::warn!("world mesh color snapshot copy: resolved scene color source is unavailable");
         return false;
     };
-    frame
+    let copy_query =
+        profiler.map(|p| p.begin_query("world_mesh_forward::scene_color_snapshot_copy", encoder));
+    let copied = frame
         .shared
         .frame_resources
         .copy_scene_color_snapshot_for_view(
@@ -41,7 +45,11 @@ pub(crate) fn encode_world_mesh_forward_color_snapshot(
             &source_color.texture,
             frame.view.viewport_px,
             prepared.pipeline.use_multiview,
-        )
+        );
+    if let (Some(profiler), Some(query)) = (profiler, copy_query) {
+        profiler.end_query(encoder, query);
+    }
+    copied
 }
 
 /// Returns whether the scene-color snapshot copy should be recorded for this view.

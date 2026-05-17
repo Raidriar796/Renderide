@@ -101,20 +101,14 @@ impl VrMirrorBlitResources {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("vr_mirror_surface"),
         });
-        let outer_query = gpu
-            .gpu_profiler_mut()
-            .map(|p| p.begin_query("graph::vr_mirror.staging_to_surface", &mut encoder));
-        encode_vr_mirror_cover_blit_pass(&mut encoder, &surface_view, pipeline, &bind_group);
-
-        if let Err(e) = overlay(&mut encoder, &surface_view, gpu) {
-            logger::warn!("debug HUD overlay (VR mirror): {e}");
-        }
-        if let Some(query) = outer_query
-            && let Some(prof) = gpu.gpu_profiler_mut()
-        {
-            prof.end_query(&mut encoder, query);
-            prof.resolve_queries(&mut encoder);
-        }
+        record_vr_mirror_surface_commands(
+            gpu,
+            &mut encoder,
+            &surface_view,
+            pipeline,
+            &bind_group,
+            overlay,
+        );
 
         // Hand the surface texture to the driver thread along with the command buffer so the
         // real `Queue::submit` runs **before** `SurfaceTexture::present`. Calling `present()` on
@@ -136,12 +130,56 @@ impl VrMirrorBlitResources {
     }
 }
 
+/// Records the mirror blit, optional HUD overlay, and profiler query resolves into one encoder.
+fn record_vr_mirror_surface_commands<F, E>(
+    gpu: &mut GpuContext,
+    encoder: &mut wgpu::CommandEncoder,
+    surface_view: &wgpu::TextureView,
+    pipeline: &wgpu::RenderPipeline,
+    bind_group: &wgpu::BindGroup,
+    overlay: F,
+) where
+    F: FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView, &mut GpuContext) -> Result<(), E>,
+    E: std::fmt::Display,
+{
+    let outer_query = gpu
+        .gpu_profiler_mut()
+        .map(|p| p.begin_query("graph::vr_mirror.staging_to_surface", encoder));
+    let blit_query = gpu
+        .gpu_profiler_mut()
+        .map(|p| p.begin_pass_query("graph::vr_mirror.staging_to_surface.pass", encoder));
+    let blit_timestamp_writes = crate::profiling::render_pass_timestamp_writes(blit_query.as_ref());
+    encode_vr_mirror_cover_blit_pass(
+        encoder,
+        surface_view,
+        pipeline,
+        bind_group,
+        blit_timestamp_writes,
+    );
+    if let Some(query) = blit_query
+        && let Some(prof) = gpu.gpu_profiler_mut()
+    {
+        prof.end_query(encoder, query);
+    }
+
+    if let Err(e) = overlay(encoder, surface_view, gpu) {
+        logger::warn!("debug HUD overlay (VR mirror): {e}");
+    }
+    if let Some(query) = outer_query
+        && let Some(prof) = gpu.gpu_profiler_mut()
+    {
+        prof.end_query(encoder, query);
+        prof.resolve_queries(encoder);
+    }
+}
+
 /// Clears the swapchain to black, then draws a fullscreen triangle using the mirror bind group.
 fn encode_vr_mirror_cover_blit_pass(
     encoder: &mut wgpu::CommandEncoder,
     surface_view: &wgpu::TextureView,
     pipeline: &wgpu::RenderPipeline,
     bind_group: &wgpu::BindGroup,
+    timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
 ) {
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("vr_mirror_surface"),
@@ -156,7 +194,7 @@ fn encode_vr_mirror_cover_blit_pass(
         })],
         depth_stencil_attachment: None,
         occlusion_query_set: None,
-        timestamp_writes: None,
+        timestamp_writes,
         multiview_mask: None,
     });
     pass.set_pipeline(pipeline);

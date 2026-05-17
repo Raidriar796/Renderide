@@ -168,9 +168,10 @@ impl BackendDiagnostics {
         encoder: &mut wgpu::CommandEncoder,
         backbuffer: &wgpu::TextureView,
         extent: (u32, u32),
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) -> Result<(), DebugHudEncodeError> {
         profiling::scope!("hud::encode");
         self.debug_hud
-            .encode_overlay(device, queue, encoder, backbuffer, extent)
+            .encode_overlay(device, queue, encoder, backbuffer, extent, profiler)
     }
 }

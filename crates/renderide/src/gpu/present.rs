@@ -239,6 +239,7 @@ pub fn record_swapchain_clear_pass(
     view: &wgpu::TextureView,
     load_color: wgpu::Color,
     render_pass_label: Option<&str>,
+    timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
 ) {
     let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: render_pass_label.or(Some("clear")),
@@ -253,7 +254,7 @@ pub fn record_swapchain_clear_pass(
         })],
         depth_stencil_attachment: None,
         occlusion_query_set: None,
-        timestamp_writes: None,
+        timestamp_writes,
         multiview_mask: None,
     });
 }
@@ -330,7 +331,23 @@ where
     let outer_query = gpu
         .gpu_profiler_mut()
         .map(|p| p.begin_query("graph::surface_clear", &mut encoder));
-    record_swapchain_clear_pass(&mut encoder, &view, clear, Some("clear"));
+    let clear_query = gpu
+        .gpu_profiler_mut()
+        .map(|p| p.begin_pass_query("graph::surface_clear.pass", &mut encoder));
+    let clear_timestamp_writes =
+        crate::profiling::render_pass_timestamp_writes(clear_query.as_ref());
+    record_swapchain_clear_pass(
+        &mut encoder,
+        &view,
+        clear,
+        Some("clear"),
+        clear_timestamp_writes,
+    );
+    if let Some(query) = clear_query
+        && let Some(prof) = gpu.gpu_profiler_mut()
+    {
+        prof.end_query(&mut encoder, query);
+    }
     if let Err(e) = overlay(&mut encoder, &view, gpu) {
         logger::warn!("debug HUD overlay (clear frame): {e}");
     }

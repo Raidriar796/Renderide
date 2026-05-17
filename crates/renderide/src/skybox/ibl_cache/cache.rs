@@ -197,6 +197,7 @@ impl SkyboxIblCache {
             source_cube.texture.as_ref(),
             filtered_cube.texture.as_ref(),
             face_size,
+            profiler.as_deref(),
         );
         encode_downsample_mips(
             DownsampleEncodeContext {

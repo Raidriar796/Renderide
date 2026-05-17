@@ -112,73 +112,83 @@ impl FrameResourceManager {
         let limits = Arc::clone(self.limits.as_ref()?);
         let viewport = (layout.width, layout.height);
         let stereo = layout.stereo;
-        let index_capacity_words = cluster_index_capacity_for_layout(
-            layout,
-            self.frame_light_count_for_view_u32(view_id),
-        )?;
+        let index_capacity_words = {
+            profiling::scope!("render::ensure_per_view_frame::cluster_capacity");
+            cluster_index_capacity_for_layout(layout, self.frame_light_count_for_view_u32(view_id))?
+        };
         let snapshot_sync = per_view_snapshot_sync_params(layout);
 
         let per_view_frame = &mut self.per_view_frame;
         let frame_gpu_opt = &mut self.frame_gpu;
         let fgpu = frame_gpu_opt.as_mut()?;
-        // Grow the shared cluster buffers to cover this view if needed; `sync_cluster_viewport`
-        // is grow-only so repeated calls from different views consolidate to the max envelope.
-        fgpu.sync_cluster_viewport(device, viewport, stereo, index_capacity_words)?;
+        {
+            profiling::scope!("render::ensure_per_view_frame::cluster_sync");
+            fgpu.sync_cluster_viewport(device, viewport, stereo, index_capacity_words)?;
+        }
         let cluster_ver = fgpu.cluster_cache.version;
         let skybox_specular_version = fgpu.skybox_specular_version();
 
         if !per_view_frame.contains_key(view_id) {
-            let frame_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("per_view_frame_uniform"),
-                size: size_of::<FrameGpuUniforms>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            crate::profiling::note_resource_churn!(Buffer, "backend::per_view_frame_uniform");
-            let lights_buffer =
-                FrameGpuResources::create_lights_storage_buffer(device, "per_view_lights_storage");
-            crate::profiling::note_resource_churn!(Buffer, "backend::per_view_lights_storage");
-            let cluster_params_buffer = make_cluster_params_buffer(device, stereo);
-            let mut scene_snapshots =
-                PerViewSceneSnapshots::new(device, layout.depth_format, layout.color_format);
-            scene_snapshots.sync(device, limits.as_ref(), snapshot_sync);
-            let refs = fgpu.cluster_cache.current_refs()?;
-            let frame_bind_group = fgpu.build_per_view_bind_group(
-                device,
-                &frame_uniform_buffer,
-                &lights_buffer,
-                refs,
-                scene_snapshots.views(),
-            );
-            let state = PerViewFrameState {
-                frame_uniform_buffer,
-                lights_buffer,
-                frame_bind_group,
-                cluster_params_buffer,
-                scene_snapshots,
-                last_cluster_version: cluster_ver,
-                last_skybox_specular_version: skybox_specular_version,
-                last_stereo: stereo,
+            let state = {
+                profiling::scope!("render::ensure_per_view_frame::insert_state");
+                let frame_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("per_view_frame_uniform"),
+                    size: size_of::<FrameGpuUniforms>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                crate::profiling::note_resource_churn!(Buffer, "backend::per_view_frame_uniform");
+                let lights_buffer = FrameGpuResources::create_lights_storage_buffer(
+                    device,
+                    "per_view_lights_storage",
+                );
+                crate::profiling::note_resource_churn!(Buffer, "backend::per_view_lights_storage");
+                let cluster_params_buffer = make_cluster_params_buffer(device, stereo);
+                let mut scene_snapshots =
+                    PerViewSceneSnapshots::new(device, layout.depth_format, layout.color_format);
+                scene_snapshots.sync(device, limits.as_ref(), snapshot_sync);
+                let refs = fgpu.cluster_cache.current_refs()?;
+                let frame_bind_group = fgpu.build_per_view_bind_group(
+                    device,
+                    &frame_uniform_buffer,
+                    &lights_buffer,
+                    refs,
+                    scene_snapshots.views(),
+                );
+                PerViewFrameState {
+                    frame_uniform_buffer,
+                    lights_buffer,
+                    frame_bind_group,
+                    cluster_params_buffer,
+                    scene_snapshots,
+                    last_cluster_version: cluster_ver,
+                    last_skybox_specular_version: skybox_specular_version,
+                    last_stereo: stereo,
+                }
             };
             let _ = per_view_frame.get_or_insert_with(view_id, || state);
         }
 
         let entry = per_view_frame.get_mut(view_id)?;
 
-        // Resize per-view params buffer on mono->stereo transition (grow-only for consistency).
         if stereo && !entry.last_stereo {
+            profiling::scope!("render::ensure_per_view_frame::resize_cluster_params");
             entry.cluster_params_buffer = make_cluster_params_buffer(device, true);
             entry.last_stereo = true;
         }
 
-        let snapshots_changed = entry
-            .scene_snapshots
-            .sync(device, limits.as_ref(), snapshot_sync);
+        let snapshots_changed = {
+            profiling::scope!("render::ensure_per_view_frame::sync_scene_snapshots");
+            entry
+                .scene_snapshots
+                .sync(device, limits.as_ref(), snapshot_sync)
+        };
         let needs_rebuild = cluster_ver != entry.last_cluster_version
             || skybox_specular_version != entry.last_skybox_specular_version
             || snapshots_changed;
 
         if needs_rebuild {
+            profiling::scope!("render::ensure_per_view_frame::rebuild_bind_group");
             let refs = fgpu.cluster_cache.current_refs()?;
             let new_bg = fgpu.build_per_view_bind_group(
                 device,

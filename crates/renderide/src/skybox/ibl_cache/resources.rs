@@ -8,7 +8,9 @@ pub(super) fn copy_cube_mip0(
     source: &wgpu::Texture,
     destination: &wgpu::Texture,
     face_size: u32,
+    profiler: Option<&crate::profiling::GpuProfilerHandle>,
 ) {
+    let copy_query = profiler.map(|p| p.begin_query("skybox_ibl::copy_cube_mip0", encoder));
     encoder.copy_texture_to_texture(
         wgpu::TexelCopyTextureInfo {
             texture: source,
@@ -28,6 +30,9 @@ pub(super) fn copy_cube_mip0(
             depth_or_array_layers: 6,
         },
     );
+    if let (Some(profiler), Some(query)) = (profiler, copy_query) {
+        profiler.end_query(encoder, query);
+    }
 }
 
 /// IBL cubemap format. Matches the analytic skybox bake; supports STORAGE_BINDING.

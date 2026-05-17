@@ -74,20 +74,42 @@ impl VrMirrorBlitResources {
             .gpu_profiler_mut()
             .map(|p| p.begin_query("graph::vr_mirror.hmd_final_copy", &mut encoder));
 
+        let stereo_query = gpu
+            .gpu_profiler_mut()
+            .map(|p| p.begin_pass_query("graph::vr_mirror.stereo_to_openxr", &mut encoder));
+        let stereo_timestamp_writes =
+            crate::profiling::render_pass_timestamp_writes(stereo_query.as_ref());
         encode_hmd_stereo_to_openxr_pass(
             &mut encoder,
             openxr_target_view,
             stereo_to_openxr_pipeline(device),
             &stereo_bind_group,
+            stereo_timestamp_writes,
         );
+        if let Some(query) = stereo_query
+            && let Some(prof) = gpu.gpu_profiler_mut()
+        {
+            prof.end_query(&mut encoder, query);
+        }
 
         if let Some((staging_view, mirror_bind_group)) = staging_view_and_bind_group.as_ref() {
+            let staging_query = gpu
+                .gpu_profiler_mut()
+                .map(|p| p.begin_pass_query("graph::vr_mirror.eye_to_staging", &mut encoder));
+            let staging_timestamp_writes =
+                crate::profiling::render_pass_timestamp_writes(staging_query.as_ref());
             encode_mirror_eye_to_staging_pass(
                 &mut encoder,
                 staging_view,
                 eye_pipeline(device),
                 mirror_bind_group,
+                staging_timestamp_writes,
             );
+            if let Some(query) = staging_query
+                && let Some(prof) = gpu.gpu_profiler_mut()
+            {
+                prof.end_query(&mut encoder, query);
+            }
             self.mark_staging_valid();
         } else {
             logger::debug!(
@@ -113,6 +135,7 @@ fn encode_hmd_stereo_to_openxr_pass(
     openxr_target_view: &wgpu::TextureView,
     pipeline: &wgpu::RenderPipeline,
     bind_group: &wgpu::BindGroup,
+    timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
 ) {
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("vr_mirror_stereo_to_openxr"),
@@ -127,7 +150,7 @@ fn encode_hmd_stereo_to_openxr_pass(
         })],
         depth_stencil_attachment: None,
         occlusion_query_set: None,
-        timestamp_writes: None,
+        timestamp_writes,
         multiview_mask: std::num::NonZeroU32::new(0b11),
     });
     pass.set_pipeline(pipeline);
@@ -141,6 +164,7 @@ fn encode_mirror_eye_to_staging_pass(
     staging_view: &wgpu::TextureView,
     pipeline: &wgpu::RenderPipeline,
     bind_group: &wgpu::BindGroup,
+    timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
 ) {
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("vr_mirror_eye_to_staging"),
@@ -155,7 +179,7 @@ fn encode_mirror_eye_to_staging_pass(
         })],
         depth_stencil_attachment: None,
         occlusion_query_set: None,
-        timestamp_writes: None,
+        timestamp_writes,
         multiview_mask: None,
     });
     pass.set_pipeline(pipeline);

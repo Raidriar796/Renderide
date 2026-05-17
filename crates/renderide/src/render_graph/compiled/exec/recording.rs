@@ -494,6 +494,8 @@ impl CompiledRenderGraph {
         // matches `pass` exactly; this also keeps the inner record_* dispatches as pointer-cheap
         // direct calls.
         let pass = &self.passes[pass_idx];
+        let pass_label = pass.profiling_label();
+        profiling::scope!("graph::execute_pass_node", pass_label.as_ref());
         match pass.kind() {
             PassKind::Raster => {
                 profiling::scope!("graph::record_raster");
@@ -531,10 +533,12 @@ impl CompiledRenderGraph {
                         profiler,
                     }
                 };
-                if pass
-                    .should_record_compute(&ctx)
-                    .map_err(GraphExecuteError::Pass)?
-                {
+                let should_record = {
+                    profiling::scope!("graph::record_compute::should_record");
+                    pass.should_record_compute(&ctx)
+                        .map_err(GraphExecuteError::Pass)?
+                };
+                if should_record {
                     let pass_query = ctx
                         .profiler
                         .map(|p| p.begin_query(pass.profiling_label(), ctx.encoder));
@@ -562,10 +566,12 @@ impl CompiledRenderGraph {
                         profiler,
                     }
                 };
-                if pass
-                    .should_record_encoder(&ctx)
-                    .map_err(GraphExecuteError::Pass)?
-                {
+                let should_record = {
+                    profiling::scope!("graph::record_encoder::should_record");
+                    pass.should_record_encoder(&ctx)
+                        .map_err(GraphExecuteError::Pass)?
+                };
+                if should_record {
                     let pass_query = ctx
                         .profiler
                         .map(|p| p.begin_query(pass.profiling_label(), ctx.encoder));
