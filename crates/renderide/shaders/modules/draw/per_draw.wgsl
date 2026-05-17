@@ -26,3 +26,7 @@ fn fallback_reflection_probe_index(draw: dt::PerDrawUniforms) -> u32 {
 fn reflection_probe_importance_mask(draw: dt::PerDrawUniforms) -> u32 {
     return dt::reflection_probe_importance_mask(draw);
 }
+
+fn has_reflection_probe_selection(draw: dt::PerDrawUniforms) -> bool {
+    return dt::has_reflection_probe_selection(draw);
+}

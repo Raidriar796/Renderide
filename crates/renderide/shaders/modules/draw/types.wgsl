@@ -47,3 +47,9 @@ fn local_reflection_probe_indices(draw: PerDrawUniforms) -> vec4<u32> {
     let packed_w = bitcast<u32>(draw._pad.w);
     return vec4<u32>(packed_z & 0xFFFFu, packed_z >> 16u, packed_w & 0xFFFFu, packed_w >> 16u);
 }
+
+/// Returns whether any fallback or local reflection probe is selected.
+fn has_reflection_probe_selection(draw: PerDrawUniforms) -> bool {
+    let locals = local_reflection_probe_indices(draw);
+    return fallback_reflection_probe_index(draw) != 0u || any(locals != vec4<u32>(0u));
+}

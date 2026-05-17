@@ -22,7 +22,7 @@ fn selected_draw(view_layer: u32) -> dt::PerDrawUniforms {
 
 fn has_indirect_specular(view_layer: u32, enabled: bool) -> bool {
     let draw = selected_draw(view_layer);
-    return enabled && pd::reflection_probe_importance_mask(draw) > 0u;
+    return enabled && pd::has_reflection_probe_selection(draw);
 }
 
 fn dominant_reflection_dir(n: vec3<f32>, v: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
@@ -119,20 +119,28 @@ fn sample_probe_radiance(
     ).rgb * intensity;
 }
 
-fn add_importance_to_total(
-    total: vec4<f32>,
-    importance: vec4<f32>,
-) -> vec4<f32> {
-    if (importance.w < MIN_PROBE_BLEND_WEIGHT) {
+struct ProbeBlendGroup {
+    weighted_result: vec3<f32>,
+    weight_sum: f32,
+    coverage: f32,
+}
+
+fn empty_probe_blend_group() -> ProbeBlendGroup {
+    return ProbeBlendGroup(vec3<f32>(0.0), 0.0, 0.0);
+}
+
+fn add_importance_to_total(total: vec4<f32>, importance: ProbeBlendGroup) -> vec4<f32> {
+    if (importance.weight_sum < MIN_PROBE_BLEND_WEIGHT || importance.coverage < MIN_PROBE_BLEND_WEIGHT) {
         return total;
     }
-    let remaining = min(importance.w, 1.0 - total.w);
-    return total + vec4<f32>(importance.xyz * (remaining / importance.w), remaining);
+    let remaining = min(importance.coverage, 1.0 - total.w);
+    let result = importance.weighted_result / importance.weight_sum;
+    return total + vec4<f32>(result * remaining, remaining);
 }
 
 fn finalize_radiance(
     total: vec4<f32>,
-    importance: vec4<f32>,
+    importance: ProbeBlendGroup,
     fallback_index: u32,
     world_pos: vec3<f32>,
     dir: vec3<f32>,
@@ -147,19 +155,23 @@ fn finalize_radiance(
 }
 
 fn add_radiance_contribution_to_importance(
-    importance: vec4<f32>,
+    importance: ProbeBlendGroup,
     index: u32,
     world_pos: vec3<f32>,
     dir: vec3<f32>,
     perceptual_roughness: f32,
-) -> vec4<f32> {
+) -> ProbeBlendGroup {
     let probe = rg::reflection_probes[index];
     let probe_weight = probe_edge_weight(probe, world_pos);
     if (probe_weight < MIN_PROBE_BLEND_WEIGHT) {
         return importance;
     }
     let probe_result = sample_probe_radiance(index, world_pos, dir, perceptual_roughness);
-    return importance + vec4<f32>(probe_weight * probe_result, probe_weight);
+    return ProbeBlendGroup(
+        importance.weighted_result + probe_weight * probe_result,
+        importance.weight_sum + probe_weight,
+        max(importance.coverage, probe_weight),
+    );
 }
 
 fn indirect_radiance(
@@ -174,16 +186,15 @@ fn indirect_radiance(
         return vec3<f32>(0.0);
     }
     let draw = selected_draw(view_layer);
-    let importance_mask = pd::reflection_probe_importance_mask(draw);
-    if (importance_mask == 0u) {
+    if (!pd::has_reflection_probe_selection(draw)) {
         return vec3<f32>(0.0);
     }
+    let importance_mask = pd::reflection_probe_importance_mask(draw);
     let dir = dominant_reflection_dir(n, v, perceptual_roughness);
     let indices = pd::local_reflection_probe_indices(draw);
     let fallback_index = pd::fallback_reflection_probe_index(draw);
-    // Vector in xyz, weight in w
     var total = vec4<f32>(0.0);
-    var importance = vec4<f32>(0.0);
+    var importance = empty_probe_blend_group();
 
     for (var i = 0u; i < 4u; i++) {
         let index = indices[i];
@@ -195,7 +206,7 @@ fn indirect_radiance(
             if (1.0 - total.w <= MIN_PROBE_BLEND_WEIGHT) {
                 return total.xyz;
             }
-            importance = vec4<f32>(0.0);
+            importance = empty_probe_blend_group();
         }
         importance = add_radiance_contribution_to_importance(importance, index, world_pos, dir, perceptual_roughness);
     }
@@ -250,7 +261,7 @@ fn sample_probe_sh2_or_ambient(atlas_index: u32, normal_ws: vec3<f32>) -> vec3<f
 
 fn finalize_diffuse_sh2(
     total: vec4<f32>,
-    importance: vec4<f32>,
+    importance: ProbeBlendGroup,
     fallback_index: u32,
     normal_ws: vec3<f32>,
 ) -> vec3<f32> {
@@ -263,18 +274,22 @@ fn finalize_diffuse_sh2(
 }
 
 fn add_diffuse_sh2_contribution_to_importance(
-    importance: vec4<f32>,
+    importance: ProbeBlendGroup,
     index: u32,
     world_pos: vec3<f32>,
     normal_ws: vec3<f32>,
-) -> vec4<f32> {
+) -> ProbeBlendGroup {
     let probe = rg::reflection_probes[index];
     let probe_weight = probe_edge_weight(probe, world_pos);
     if (probe_weight < MIN_PROBE_BLEND_WEIGHT) {
         return importance;
     }
     let probe_result = sample_probe_sh2_or_ambient(index, normal_ws);
-    return importance + vec4<f32>(probe_weight * probe_result, probe_weight);
+    return ProbeBlendGroup(
+        importance.weighted_result + probe_weight * probe_result,
+        importance.weight_sum + probe_weight,
+        max(importance.coverage, probe_weight),
+    );
 }
 
 fn indirect_diffuse(world_pos: vec3<f32>, normal_ws: vec3<f32>, view_layer: u32, enabled: bool) -> vec3<f32> {
@@ -282,15 +297,14 @@ fn indirect_diffuse(world_pos: vec3<f32>, normal_ws: vec3<f32>, view_layer: u32,
         return vec3<f32>(0.0);
     }
     let draw = selected_draw(view_layer);
-    let importance_mask = pd::reflection_probe_importance_mask(draw);
-    if (importance_mask == 0u) {
+    if (!pd::has_reflection_probe_selection(draw)) {
         return ambient_probe_or_zero(normal_ws);
     }
+    let importance_mask = pd::reflection_probe_importance_mask(draw);
     let indices = pd::local_reflection_probe_indices(draw);
     let fallback_index = pd::fallback_reflection_probe_index(draw);
-    // Vector in xyz, weight in w
     var total = vec4<f32>(0.0);
-    var importance = vec4<f32>(0.0);
+    var importance = empty_probe_blend_group();
 
     for (var i = 0u; i < 4u; i++) {
         let index = indices[i];
@@ -302,7 +316,7 @@ fn indirect_diffuse(world_pos: vec3<f32>, normal_ws: vec3<f32>, view_layer: u32,
             if (1.0 - total.w <= MIN_PROBE_BLEND_WEIGHT) {
                 return total.xyz;
             }
-            importance = vec4<f32>(0.0);
+            importance = empty_probe_blend_group();
         }
         importance = add_diffuse_sh2_contribution_to_importance(importance, index, world_pos, normal_ws);
     }
