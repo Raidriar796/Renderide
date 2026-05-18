@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://doublestyx.github.io/Renderide/sitemap.xml
