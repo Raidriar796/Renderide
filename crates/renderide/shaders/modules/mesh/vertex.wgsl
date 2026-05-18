@@ -4,6 +4,7 @@
 
 #import renderide::draw::per_draw as pd
 #import renderide::draw::types as dt
+#import renderide::core::math as rmath
 
 struct UvVertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
@@ -80,7 +81,7 @@ fn world_position(draw: dt::PerDrawUniforms, pos: vec4<f32>) -> vec4<f32> {
 }
 
 fn world_normal(draw: dt::PerDrawUniforms, n: vec4<f32>) -> vec3<f32> {
-    return normalize(draw.normal_matrix * n.xyz);
+    return rmath::safe_normalize(draw.normal_matrix * n.xyz, vec3<f32>(0.0, 1.0, 0.0));
 }
 
 fn model_vector(draw: dt::PerDrawUniforms, v: vec3<f32>) -> vec3<f32> {

@@ -719,20 +719,20 @@ fn full_pipeline_overlay_vertex_projects_to_screen_ndc() {
     );
 }
 
-/// Cached zero-scale state reports the selected node as non-renderable for draw collection.
+/// Cached line-scale state reports the selected node as non-renderable for draw collection.
 #[test]
 fn transform_has_degenerate_scale_reads_cached_world_state() {
     let mut scene = SceneCoordinator::new();
     let id = RenderSpaceId(11);
     let mut collapsed = identity_transform();
-    collapsed.scale = Vec3::new(0.0, 1.0, 1.0);
+    collapsed.scale = Vec3::new(0.0, 0.0, 1.0);
     scene.test_seed_space_identity_worlds(id, vec![collapsed], vec![-1]);
 
     assert!(scene.transform_has_degenerate_scale(id, 0));
     assert!(scene.transform_has_degenerate_scale_for_context(id, 0, RenderingContext::UserView));
 }
 
-/// A zero-scale render-context override hides only the context that owns the override.
+/// A line-scale render-context override hides only the context that owns the override.
 #[test]
 fn transform_override_zero_scale_is_context_local_degenerate_state() {
     let mut scene = SceneCoordinator::new();
@@ -756,6 +756,27 @@ fn transform_override_zero_scale_is_context_local_degenerate_state() {
         0,
         RenderingContext::ExternalView
     ));
+}
+
+/// A planar render-context override stays renderable for the selected context.
+#[test]
+fn transform_override_planar_zero_scale_is_renderable_for_context() {
+    let mut scene = SceneCoordinator::new();
+    let id = RenderSpaceId(14);
+    scene.test_seed_space_identity_worlds(id, vec![identity_transform()], vec![-1]);
+    scene
+        .spaces
+        .get_mut(&id)
+        .expect("space")
+        .render_transform_overrides
+        .push(RenderTransformOverrideEntry {
+            node_id: 0,
+            context: RenderingContext::UserView,
+            scale_override: Some(Vec3::new(1.0, 0.0, 1.0)),
+            ..Default::default()
+        });
+
+    assert!(!scene.transform_has_degenerate_scale_for_context(id, 0, RenderingContext::UserView));
 }
 
 /// A context scale override can restore a base zero-scale transform for that context only.

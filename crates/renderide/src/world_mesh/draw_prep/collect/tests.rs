@@ -21,6 +21,47 @@ fn identity_transform() -> RenderTransform {
     }
 }
 
+/// Builds an identity transform with the requested scale.
+fn scaled_transform(scale: Vec3) -> RenderTransform {
+    RenderTransform {
+        scale,
+        ..identity_transform()
+    }
+}
+
+/// Evaluates the draw transform-scale filter for one root node.
+fn transform_scale_filter_result(scale: Vec3) -> bool {
+    let mut scene = SceneCoordinator::new();
+    let space_id = RenderSpaceId(28);
+    scene.test_seed_space_identity_worlds(space_id, vec![scaled_transform(scale)], vec![-1]);
+
+    let mesh_pool = MeshPool::default_pool();
+    let store = MaterialPropertyStore::new();
+    let material_dict = MaterialDictionary::new(&store);
+    let router = MaterialRouter::new(RasterPipelineKind::Null);
+    let registry = PropertyIdRegistry::new();
+    let property_ids = MaterialPipelinePropertyIds::new(&registry);
+    let ctx = DrawCollectionContext {
+        scene: &scene,
+        mesh_pool: &mesh_pool,
+        material_dict: &material_dict,
+        material_router: &router,
+        pipeline_property_ids: &property_ids,
+        shader_perm: ShaderPermutation::default(),
+        render_context: RenderingContext::UserView,
+        head_output_transform: Mat4::IDENTITY,
+        view_origin_world: Vec3::ZERO,
+        culling: None,
+        transform_filter: None,
+        render_space_filter: None,
+        material_cache: None,
+        reflection_probes: None,
+        prepared: None,
+    };
+
+    transform_chain_has_degenerate_scale(&ctx, space_id, 0)
+}
+
 /// Minimal prepared draw used to exercise transform-scale filtering before mesh lookup.
 fn prepared_draw(space_id: RenderSpaceId) -> FramePreparedDraw {
     FramePreparedDraw {
@@ -78,33 +119,17 @@ fn world_space_deformed_front_face_uses_deform_root_parity() {
 /// Unit-scale renderer nodes remain eligible for draw collection.
 #[test]
 fn draw_transform_scale_filter_allows_unit_scale() {
-    let mut scene = SceneCoordinator::new();
-    let space_id = RenderSpaceId(28);
-    scene.test_seed_space_identity_worlds(space_id, vec![identity_transform()], vec![-1]);
+    assert!(!transform_scale_filter_result(Vec3::ONE));
+}
 
-    let mesh_pool = MeshPool::default_pool();
-    let store = MaterialPropertyStore::new();
-    let material_dict = MaterialDictionary::new(&store);
-    let router = MaterialRouter::new(RasterPipelineKind::Null);
-    let registry = PropertyIdRegistry::new();
-    let property_ids = MaterialPipelinePropertyIds::new(&registry);
-    let ctx = DrawCollectionContext {
-        scene: &scene,
-        mesh_pool: &mesh_pool,
-        material_dict: &material_dict,
-        material_router: &router,
-        pipeline_property_ids: &property_ids,
-        shader_perm: ShaderPermutation::default(),
-        render_context: RenderingContext::UserView,
-        head_output_transform: Mat4::IDENTITY,
-        view_origin_world: Vec3::ZERO,
-        culling: None,
-        transform_filter: None,
-        render_space_filter: None,
-        material_cache: None,
-        reflection_probes: None,
-        prepared: None,
-    };
+/// Planar zero-scale renderer nodes remain eligible for draw collection.
+#[test]
+fn draw_transform_scale_filter_allows_planar_zero_scale() {
+    assert!(!transform_scale_filter_result(Vec3::new(1.0, 0.0, 1.0)));
+}
 
-    assert!(!transform_chain_has_degenerate_scale(&ctx, space_id, 0));
+/// Line-scale renderer nodes are not eligible for triangle draw collection.
+#[test]
+fn draw_transform_scale_filter_rejects_line_scale() {
+    assert!(transform_scale_filter_result(Vec3::new(1.0, 0.0, 0.0)));
 }

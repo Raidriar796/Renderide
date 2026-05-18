@@ -37,15 +37,35 @@ impl WgslMat3x3 {
         }
     }
 
+    /// Returns a cofactor normal matrix for a singular planar model matrix.
+    #[must_use]
+    fn planar_cofactor_normal_matrix(matrix: Mat3) -> Option<Mat3> {
+        let c0 = matrix.y_axis.cross(matrix.z_axis);
+        let c1 = matrix.z_axis.cross(matrix.x_axis);
+        let c2 = matrix.x_axis.cross(matrix.y_axis);
+        if !(c0.is_finite() && c1.is_finite() && c2.is_finite()) {
+            return None;
+        }
+        let max_area_sq = c0
+            .length_squared()
+            .max(c1.length_squared())
+            .max(c2.length_squared());
+        if !max_area_sq.is_finite() || max_area_sq <= 1e-32 {
+            return None;
+        }
+        Some(Mat3::from_cols(c0, c1, c2))
+    }
+
     /// `transpose(inverse(M))` for the upper 3x3 of `model`, packed for WGSL `normal_matrix`.
     ///
-    /// For singular or near-singular linear parts, returns identity to avoid NaNs in the shader.
+    /// For singular planar linear parts, uses the finite cofactor matrix so flattened surfaces keep
+    /// a useful normal basis. More collapsed matrices return identity to avoid NaNs in the shader.
     #[must_use]
     pub(super) fn from_model_upper_3x3(model: Mat4) -> Self {
         let m3 = Mat3::from_mat4(model);
         let det = m3.determinant();
         if !det.is_finite() || det.abs() < 1e-20 {
-            return Self::IDENTITY;
+            return Self::planar_cofactor_normal_matrix(m3).map_or(Self::IDENTITY, Self::from_mat3);
         }
         let nm = m3.inverse().transpose();
         Self::from_mat3(nm)
@@ -65,5 +85,23 @@ mod tests {
         let expected = m3.inverse().transpose();
         let c0 = Vec3::new(nm.col0[0], nm.col0[1], nm.col0[2]);
         assert!((c0 - expected.x_axis).length() < 1e-4);
+    }
+
+    #[test]
+    fn normal_matrix_planar_scale_uses_cofactor_basis() {
+        let m = Mat4::from_scale(Vec3::new(1.0, 0.0, 1.0));
+        let nm = WgslMat3x3::from_model_upper_3x3(m);
+
+        assert_eq!(nm.col0, [0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(nm.col1, [0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(nm.col2, [0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn normal_matrix_all_zero_scale_falls_back_to_identity() {
+        let m = Mat4::from_scale(Vec3::ZERO);
+        let nm = WgslMat3x3::from_model_upper_3x3(m);
+
+        assert_eq!(nm, WgslMat3x3::IDENTITY);
     }
 }

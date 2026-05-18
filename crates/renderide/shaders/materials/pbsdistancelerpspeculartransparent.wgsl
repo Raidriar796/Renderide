@@ -26,6 +26,7 @@
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::material::variant_bits as vb
+#import renderide::core::math as rmath
 #import renderide::core::uv as uvu
 
 struct PbsDistanceLerpSpecularTransparentMaterial {
@@ -140,7 +141,7 @@ fn vs_main(
     );
     let displaced_obj = pos.xyz + direction * acc.displace;
     let world_p = d.model * vec4<f32>(displaced_obj, 1.0);
-    let wn = normalize(d.normal_matrix * n.xyz);
+    let wn = rmath::safe_normalize(d.normal_matrix * n.xyz, vec3<f32>(0.0, 1.0, 0.0));
     let wt = mv::world_tangent(d, t);
 #ifdef MULTIVIEW
     let vp = mv::select_view_proj(d, view_idx);

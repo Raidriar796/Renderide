@@ -36,6 +36,7 @@
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::material::variant_bits as vb
+#import renderide::core::math as rmath
 #import renderide::core::normal_decode as nd
 #import renderide::core::uv as uvu
 
@@ -165,7 +166,7 @@ fn vs_main(
     let uv = displaced_uv.uv;
 
     let world_p = d.model * vec4<f32>(displaced, 1.0);
-    let wn = normalize(d.normal_matrix * n.xyz);
+    let wn = rmath::safe_normalize(d.normal_matrix * n.xyz, vec3<f32>(0.0, 1.0, 0.0));
     let wt = mv::world_tangent(d, t);
 #ifdef MULTIVIEW
     let vp = mv::select_view_proj(d, view_idx);

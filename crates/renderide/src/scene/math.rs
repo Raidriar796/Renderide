@@ -4,38 +4,89 @@ use glam::{Mat4, Quat, Vec3};
 
 use crate::shared::RenderTransform;
 
-/// Minimum absolute object scale axis that remains renderable.
+/// Minimum absolute object scale axis that contributes one transform dimension.
 pub(crate) const MIN_RENDER_SCALE: f32 = 1e-8;
 
-/// Returns `true` when any raw scale axis would collapse an object draw.
+/// Minimum squared cross-product area that counts as two independent transform dimensions.
+const MIN_RENDER_AREA_SQ: f32 =
+    MIN_RENDER_SCALE * MIN_RENDER_SCALE * MIN_RENDER_SCALE * MIN_RENDER_SCALE;
+
+/// Returns the sanitized scale axis used for matrix construction.
+#[inline]
+fn sanitized_scale_axis(axis: f32) -> f32 {
+    if !axis.is_finite() {
+        1.0
+    } else if axis.abs() <= MIN_RENDER_SCALE {
+        0.0
+    } else {
+        axis
+    }
+}
+
+/// Returns whether an input scale axis contributes one dimension to rasterized triangle geometry.
+#[inline]
+fn scale_axis_contributes_dimension(axis: f32) -> bool {
+    axis.is_finite() && axis.abs() > MIN_RENDER_SCALE
+}
+
+/// Returns the sanitized scale vector used for matrix construction.
+#[inline]
+fn sanitized_scale(scale: Vec3) -> Vec3 {
+    let contributes = scale_axis_contributes_dimension(scale.x)
+        || scale_axis_contributes_dimension(scale.y)
+        || scale_axis_contributes_dimension(scale.z);
+    if scale.is_finite() && !contributes {
+        return Vec3::ONE;
+    }
+    Vec3::new(
+        sanitized_scale_axis(scale.x),
+        sanitized_scale_axis(scale.y),
+        sanitized_scale_axis(scale.z),
+    )
+}
+
+/// Returns whether a transform carries non-finite scale data.
+#[inline]
+pub(crate) fn render_transform_has_invalid_scale(t: &RenderTransform) -> bool {
+    let scale = t.scale;
+    !(scale.x.is_finite() && scale.y.is_finite() && scale.z.is_finite())
+}
+
+/// Returns `true` when the local scale has fewer than two renderable dimensions.
 #[inline]
 pub(crate) fn render_transform_has_degenerate_scale(t: &RenderTransform) -> bool {
     let scale = t.scale;
-    !(scale.x.is_finite() && scale.y.is_finite() && scale.z.is_finite())
-        || scale.x.abs() <= MIN_RENDER_SCALE
-        || scale.y.abs() <= MIN_RENDER_SCALE
-        || scale.z.abs() <= MIN_RENDER_SCALE
+    if render_transform_has_invalid_scale(t) {
+        return true;
+    }
+    let axis_count = u8::from(scale_axis_contributes_dimension(scale.x))
+        + u8::from(scale_axis_contributes_dimension(scale.y))
+        + u8::from(scale_axis_contributes_dimension(scale.z));
+    axis_count < 2
+}
+
+/// Returns `true` when an effective model matrix has fewer than two independent dimensions.
+#[inline]
+pub(crate) fn render_matrix_has_degenerate_scale(model: Mat4) -> bool {
+    let x = model.x_axis.truncate();
+    let y = model.y_axis.truncate();
+    let z = model.z_axis.truncate();
+    if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+        return true;
+    }
+    let xy = x.cross(y).length_squared();
+    let yz = y.cross(z).length_squared();
+    let zx = z.cross(x).length_squared();
+    if !(xy.is_finite() && yz.is_finite() && zx.is_finite()) {
+        return true;
+    }
+    xy.max(yz).max(zx) <= MIN_RENDER_AREA_SQ
 }
 
 /// Builds column-major TRS = `T * R * S`, matching the host `RenderTransform` convention.
 #[inline]
 pub fn render_transform_to_matrix(t: &RenderTransform) -> Mat4 {
-    let sx = if t.scale.x.is_finite() && t.scale.x.abs() >= MIN_RENDER_SCALE {
-        t.scale.x
-    } else {
-        1.0
-    };
-    let sy = if t.scale.y.is_finite() && t.scale.y.abs() >= MIN_RENDER_SCALE {
-        t.scale.y
-    } else {
-        1.0
-    };
-    let sz = if t.scale.z.is_finite() && t.scale.z.abs() >= MIN_RENDER_SCALE {
-        t.scale.z
-    } else {
-        1.0
-    };
-    let scale = Vec3::new(sx, sy, sz);
+    let scale = sanitized_scale(t.scale);
     let rot = if t.rotation.w.abs() >= 1e-8
         || t.rotation.x.abs() >= 1e-8
         || t.rotation.y.abs() >= 1e-8
@@ -86,19 +137,30 @@ mod tests {
         )));
     }
 
-    /// Exact zero on any object scale axis collapses mesh draws.
+    /// Exact zero on one object scale axis still leaves a rasterizable plane.
     #[test]
-    fn zero_scale_axis_is_degenerate_for_draws() {
-        assert!(render_transform_has_degenerate_scale(&scaled_transform(
+    fn one_zero_scale_axis_is_not_degenerate_for_draws() {
+        assert!(!render_transform_has_degenerate_scale(&scaled_transform(
             Vec3::new(1.0, 0.0, 1.0)
         )));
     }
 
-    /// The existing near-zero transform threshold is also treated as non-renderable.
+    /// Two exact zero object scale axes collapse triangle geometry to a line.
     #[test]
-    fn near_zero_scale_axis_is_degenerate_for_draws() {
+    fn two_zero_scale_axes_are_degenerate_for_draws() {
         assert!(render_transform_has_degenerate_scale(&scaled_transform(
+            Vec3::new(1.0, 0.0, 0.0)
+        )));
+    }
+
+    /// The existing near-zero transform threshold classifies axes as collapsed.
+    #[test]
+    fn near_zero_scale_axes_are_collapsed_for_draws() {
+        assert!(!render_transform_has_degenerate_scale(&scaled_transform(
             Vec3::new(1.0, MIN_RENDER_SCALE, 1.0)
+        )));
+        assert!(render_transform_has_degenerate_scale(&scaled_transform(
+            Vec3::new(1.0, MIN_RENDER_SCALE, MIN_RENDER_SCALE)
         )));
     }
 
@@ -127,22 +189,21 @@ mod tests {
         assert!((m.col(2).z - 2.0).abs() < 1e-5);
     }
 
-    /// Near-zero, NaN, or infinite scale axes fall back to a scale of 1 so the resulting matrix
-    /// remains invertible. Each axis is independent.
+    /// Finite zero scale axes are preserved, while non-finite axes fall back to unit scale.
     #[test]
-    fn degenerate_scale_axes_fall_back_to_unit_scale() {
+    fn zero_scale_axes_are_preserved_and_non_finite_axes_fall_back() {
         let t = RenderTransform {
             position: Vec3::ZERO,
             scale: Vec3::new(0.0, f32::NAN, f32::INFINITY),
             rotation: Quat::IDENTITY,
         };
         let m = render_transform_to_matrix(&t);
-        assert!((m.col(0).x - 1.0).abs() < 1e-6);
+        assert!(m.col(0).x.abs() < 1e-6);
         assert!((m.col(1).y - 1.0).abs() < 1e-6);
         assert!((m.col(2).z - 1.0).abs() < 1e-6);
     }
 
-    /// An all-zero scale vector also falls back axis-by-axis so translation remains usable.
+    /// An all-zero scale vector is an identity-default fallback, but remains non-renderable.
     #[test]
     fn zero_scale_vector_falls_back_to_unit_scale_matrix() {
         let t = RenderTransform {
@@ -156,6 +217,21 @@ mod tests {
         assert!((m.col(1).y - 1.0).abs() < 1e-6);
         assert!((m.col(2).z - 1.0).abs() < 1e-6);
         assert_eq!(m.col(3).truncate(), Vec3::new(3.0, 4.0, 5.0));
+        assert!(render_transform_has_degenerate_scale(&t));
+    }
+
+    /// Matrix rank, not raw local axes, determines the effective drawability of a transform chain.
+    #[test]
+    fn render_matrix_degenerate_scale_requires_two_independent_dimensions() {
+        assert!(!render_matrix_has_degenerate_scale(Mat4::from_scale(
+            Vec3::new(1.0, 0.0, 1.0)
+        )));
+        assert!(render_matrix_has_degenerate_scale(Mat4::from_scale(
+            Vec3::new(1.0, 0.0, 0.0)
+        )));
+        assert!(render_matrix_has_degenerate_scale(Mat4::from_scale(
+            Vec3::ZERO
+        )));
     }
 
     /// A zero-length rotation quaternion falls back to identity; a finite non-unit quaternion is
