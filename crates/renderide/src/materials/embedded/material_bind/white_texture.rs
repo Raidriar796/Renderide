@@ -1,8 +1,17 @@
-//! 1x1 placeholder textures used as the default binding for unset `@group(1)` texture slots.
+//! Placeholder textures used as default bindings for unset or nonresident `@group(1)` texture slots.
 
 use std::sync::Arc;
 
 use super::super::bind_kind::TextureBindKind;
+
+/// Width and height of the generated checkerboard fallback texture.
+pub(super) const CHECKERBOARD_TEXTURE_SIZE: u32 = 128;
+/// Width and height of each checkerboard cell.
+pub(super) const CHECKERBOARD_CELL_SIZE: u32 = 16;
+/// Dark texel used by the nonresident texture checkerboard.
+pub(super) const CHECKERBOARD_DARK_RGBA: [u8; 4] = [0, 0, 0, 255];
+/// Light texel used by the nonresident texture checkerboard.
+pub(super) const CHECKERBOARD_LIGHT_RGBA: [u8; 4] = [13, 13, 13, 255];
 
 /// Placeholder 1x1 texture for one [`TextureBindKind`].
 pub(super) struct PlaceholderTexture {
@@ -227,6 +236,33 @@ pub(super) fn create_flat_normal(
     create_placeholder(device, kind, PlaceholderTextureColor::FlatNormal)
 }
 
+/// Allocates the nonresident Texture2D checkerboard fallback.
+pub(super) fn create_checkerboard_2d(device: &wgpu::Device) -> PlaceholderTexture {
+    let texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("embedded_loading_checkerboard"),
+        size: wgpu::Extent3d {
+            width: CHECKERBOARD_TEXTURE_SIZE,
+            height: CHECKERBOARD_TEXTURE_SIZE,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    }));
+    let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("embedded_loading_checkerboard_view"),
+        ..Default::default()
+    }));
+    crate::profiling::note_resource_churn!(
+        TextureView,
+        "materials::embedded_checkerboard_texture_view"
+    );
+    PlaceholderTexture { texture, view }
+}
+
 fn upload_placeholder(
     queue: &wgpu::Queue,
     placeholder: &PlaceholderTexture,
@@ -299,4 +335,101 @@ pub(super) fn upload_flat_normal(
         kind,
         PlaceholderTextureColor::FlatNormal,
     );
+}
+
+/// Uploads the generated checkerboard fallback into `checkerboard`.
+pub(super) fn upload_checkerboard_2d(queue: &wgpu::Queue, checkerboard: &PlaceholderTexture) {
+    let bytes = checkerboard_rgba8();
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: checkerboard.texture.as_ref(),
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(CHECKERBOARD_TEXTURE_SIZE * 4),
+            rows_per_image: None,
+        },
+        wgpu::Extent3d {
+            width: CHECKERBOARD_TEXTURE_SIZE,
+            height: CHECKERBOARD_TEXTURE_SIZE,
+            depth_or_array_layers: 1,
+        },
+    );
+}
+
+/// Builds the RGBA8 bytes for the nonresident Texture2D checkerboard fallback.
+pub(super) fn checkerboard_rgba8() -> Vec<u8> {
+    let len = CHECKERBOARD_TEXTURE_SIZE as usize * CHECKERBOARD_TEXTURE_SIZE as usize * 4;
+    let mut bytes = Vec::with_capacity(len);
+    for y in 0..CHECKERBOARD_TEXTURE_SIZE {
+        for x in 0..CHECKERBOARD_TEXTURE_SIZE {
+            bytes.extend_from_slice(&checkerboard_texel_rgba(x, y));
+        }
+    }
+    bytes
+}
+
+/// Returns the checkerboard texel at `x`, `y`.
+fn checkerboard_texel_rgba(x: u32, y: u32) -> [u8; 4] {
+    let x_cell = x / CHECKERBOARD_CELL_SIZE;
+    let y_cell = y / CHECKERBOARD_CELL_SIZE;
+    if (x_cell ^ y_cell) & 1 == 0 {
+        CHECKERBOARD_DARK_RGBA
+    } else {
+        CHECKERBOARD_LIGHT_RGBA
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CHECKERBOARD_CELL_SIZE, CHECKERBOARD_DARK_RGBA, CHECKERBOARD_LIGHT_RGBA,
+        CHECKERBOARD_TEXTURE_SIZE, checkerboard_rgba8,
+    };
+
+    /// Returns one RGBA texel from the generated checkerboard byte array.
+    fn texel(bytes: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * CHECKERBOARD_TEXTURE_SIZE + x) * 4) as usize;
+        [bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]
+    }
+
+    /// Generated checkerboard bytes exactly cover the configured texture extent.
+    #[test]
+    fn checkerboard_generation_has_expected_size() {
+        let bytes = checkerboard_rgba8();
+        assert_eq!(
+            bytes.len(),
+            (CHECKERBOARD_TEXTURE_SIZE * CHECKERBOARD_TEXTURE_SIZE * 4) as usize
+        );
+    }
+
+    /// Generated checkerboard bytes alternate between the stable dark and light texels.
+    #[test]
+    fn checkerboard_generation_uses_stable_dark_and_light_texels() {
+        let bytes = checkerboard_rgba8();
+        assert_eq!(texel(&bytes, 0, 0), CHECKERBOARD_DARK_RGBA);
+        assert_eq!(
+            texel(&bytes, CHECKERBOARD_CELL_SIZE, 0),
+            CHECKERBOARD_LIGHT_RGBA
+        );
+        assert_eq!(
+            texel(&bytes, 0, CHECKERBOARD_CELL_SIZE),
+            CHECKERBOARD_LIGHT_RGBA
+        );
+        assert_eq!(
+            texel(&bytes, CHECKERBOARD_CELL_SIZE, CHECKERBOARD_CELL_SIZE),
+            CHECKERBOARD_DARK_RGBA
+        );
+    }
+
+    /// Generated checkerboard texels are opaque.
+    #[test]
+    fn checkerboard_generation_is_fully_opaque() {
+        let bytes = checkerboard_rgba8();
+        assert!(bytes.chunks_exact(4).all(|texel| texel[3] == 255));
+    }
 }

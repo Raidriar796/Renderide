@@ -153,7 +153,7 @@ impl EmbeddedMaterialBindResources {
                         offscreen_write_render_texture_asset_id,
                     )
                     .unwrap_or_else(|| {
-                        self.default_texture_view(layout, b, host_name, view_dimension)
+                        self.fallback_texture_view(layout, b, host_name, view_dimension, resolved)
                     });
                     views.push(tex_view);
                 }
@@ -200,6 +200,21 @@ impl EmbeddedMaterialBindResources {
             samplers,
             texture_bind_signature: hasher.finish(),
         })
+    }
+
+    /// Returns the fallback view for a reflected texture slot after resident view resolution failed.
+    fn fallback_texture_view(
+        &self,
+        layout: &StemMaterialLayout,
+        binding: u32,
+        host_name: &str,
+        view_dimension: wgpu::TextureViewDimension,
+        resolved: ResolvedTextureBinding,
+    ) -> Arc<wgpu::TextureView> {
+        if should_use_checkerboard_texture_fallback(view_dimension, resolved) {
+            return self.checkerboard_2d.view.clone();
+        }
+        self.default_texture_view(layout, binding, host_name, view_dimension)
     }
 
     fn default_texture_view(
@@ -421,6 +436,18 @@ impl EmbeddedMaterialBindResources {
     }
 }
 
+/// Returns whether a failed resident-view lookup should bind the generated checkerboard texture.
+fn should_use_checkerboard_texture_fallback(
+    view_dimension: wgpu::TextureViewDimension,
+    binding: ResolvedTextureBinding,
+) -> bool {
+    matches!(
+        (view_dimension, binding),
+        (wgpu::TextureViewDimension::D2, ResolvedTextureBinding::Texture2D { asset_id })
+            if asset_id >= 0
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TextureDefaultPlaceholder {
     White,
@@ -450,8 +477,12 @@ fn texture_default_placeholder(
 
 #[cfg(test)]
 mod tests {
-    use super::{TextureDefaultPlaceholder, texture_default_placeholder};
+    use super::{
+        TextureDefaultPlaceholder, should_use_checkerboard_texture_fallback,
+        texture_default_placeholder,
+    };
     use crate::embedded_shaders::EmbeddedTextureDefaultKind;
+    use crate::materials::embedded::texture_resolve::ResolvedTextureBinding;
 
     #[test]
     fn texture_default_tokens_map_to_unity_placeholder_colors() {
@@ -504,5 +535,47 @@ mod tests {
             ),
             TextureDefaultPlaceholder::Gray
         );
+    }
+
+    /// A resolved Texture2D asset id uses the checkerboard when its resident view is unavailable.
+    #[test]
+    fn checkerboard_fallback_applies_to_nonresident_texture2d_bindings() {
+        assert!(should_use_checkerboard_texture_fallback(
+            wgpu::TextureViewDimension::D2,
+            ResolvedTextureBinding::Texture2D { asset_id: 7 }
+        ));
+    }
+
+    /// Unset bindings, invalid ids, and non-Texture2D resource kinds keep their existing defaults.
+    #[test]
+    fn checkerboard_fallback_skips_unset_negative_and_non_2d_bindings() {
+        assert!(!should_use_checkerboard_texture_fallback(
+            wgpu::TextureViewDimension::D2,
+            ResolvedTextureBinding::None
+        ));
+        assert!(!should_use_checkerboard_texture_fallback(
+            wgpu::TextureViewDimension::D2,
+            ResolvedTextureBinding::Texture2D { asset_id: -1 }
+        ));
+        assert!(!should_use_checkerboard_texture_fallback(
+            wgpu::TextureViewDimension::D3,
+            ResolvedTextureBinding::Texture2D { asset_id: 7 }
+        ));
+        assert!(!should_use_checkerboard_texture_fallback(
+            wgpu::TextureViewDimension::D2,
+            ResolvedTextureBinding::Texture3D { asset_id: 7 }
+        ));
+        assert!(!should_use_checkerboard_texture_fallback(
+            wgpu::TextureViewDimension::Cube,
+            ResolvedTextureBinding::Cubemap { asset_id: 7 }
+        ));
+        assert!(!should_use_checkerboard_texture_fallback(
+            wgpu::TextureViewDimension::D2,
+            ResolvedTextureBinding::RenderTexture { asset_id: 7 }
+        ));
+        assert!(!should_use_checkerboard_texture_fallback(
+            wgpu::TextureViewDimension::D2,
+            ResolvedTextureBinding::VideoTexture { asset_id: 7 }
+        ));
     }
 }

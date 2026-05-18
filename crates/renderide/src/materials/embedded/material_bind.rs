@@ -44,8 +44,9 @@ use uniform::{
     MaterialUniformCacheKey,
 };
 use white_texture::{
-    PlaceholderTexture, create_black, create_flat_normal, create_gray, create_red, create_white,
-    upload_black, upload_flat_normal, upload_gray, upload_red, upload_white,
+    PlaceholderTexture, create_black, create_checkerboard_2d, create_flat_normal, create_gray,
+    create_red, create_white, upload_black, upload_checkerboard_2d, upload_flat_normal,
+    upload_gray, upload_red, upload_white,
 };
 
 use resolve::EmbeddedBindInputResolution;
@@ -123,6 +124,8 @@ pub struct EmbeddedMaterialBindResources {
     gray_2d: PlaceholderTexture,
     red_2d: PlaceholderTexture,
     flat_normal_2d: PlaceholderTexture,
+    /// Texture2D view bound while a referenced texture asset has no uploaded mip.
+    checkerboard_2d: PlaceholderTexture,
     white_3d: PlaceholderTexture,
     black_3d: PlaceholderTexture,
     gray_3d: PlaceholderTexture,
@@ -171,6 +174,7 @@ impl EmbeddedMaterialBindResources {
         let gray_2d = create_gray(device.as_ref(), TextureBindKind::Tex2D);
         let red_2d = create_red(device.as_ref(), TextureBindKind::Tex2D);
         let flat_normal_2d = create_flat_normal(device.as_ref(), TextureBindKind::Tex2D);
+        let checkerboard_2d = create_checkerboard_2d(device.as_ref());
         let white_3d = create_white(device.as_ref(), TextureBindKind::Tex3D);
         let black_3d = create_black(device.as_ref(), TextureBindKind::Tex3D);
         let gray_3d = create_gray(device.as_ref(), TextureBindKind::Tex3D);
@@ -189,6 +193,7 @@ impl EmbeddedMaterialBindResources {
             gray_2d,
             red_2d,
             flat_normal_2d,
+            checkerboard_2d,
             white_3d,
             black_3d,
             gray_3d,
@@ -217,6 +222,7 @@ impl EmbeddedMaterialBindResources {
         upload_gray(queue, &self.gray_2d, TextureBindKind::Tex2D);
         upload_red(queue, &self.red_2d, TextureBindKind::Tex2D);
         upload_flat_normal(queue, &self.flat_normal_2d, TextureBindKind::Tex2D);
+        upload_checkerboard_2d(queue, &self.checkerboard_2d);
         upload_white(queue, &self.white_3d, TextureBindKind::Tex3D);
         upload_black(queue, &self.black_3d, TextureBindKind::Tex3D);
         upload_gray(queue, &self.gray_3d, TextureBindKind::Tex3D);
