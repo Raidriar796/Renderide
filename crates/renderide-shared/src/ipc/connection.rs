@@ -1,12 +1,28 @@
-//! Command-line connection parameters for Cloudtoid IPC (`-QueueName` / `-QueueCapacity`).
+//! Startup connection parameters for Cloudtoid IPC.
 //!
 //! Matches the managed host's argument convention (see `RenderingManager.GetConnectionParameters`).
 
 use std::env;
-use std::io::{Cursor, Read};
+use std::mem::size_of;
+use std::net::UdpSocket;
+use std::num::TryFromIntError;
+use std::string::FromUtf8Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use thiserror::Error;
+
+/// Loopback UDP port used by debug renderer attach handshakes.
+const ATTACH_RENDERER_PORT: u16 = 42_512;
+/// Maximum accepted attach handshake payload size.
+const ATTACH_RENDERER_PACKET_MAX_BYTES: usize = 4096;
+/// Maximum number of bytes in a .NET 7-bit encoded i32.
+const MAX_7BIT_ENCODED_I32_BYTES: usize = 5;
+/// High bit marking another 7-bit length byte.
+const SEVEN_BIT_CONTINUATION: u8 = 0x80;
+/// Data bits carried by each 7-bit length byte.
+const SEVEN_BIT_VALUE_MASK: u8 = 0x7f;
+/// Valid data bits in the fifth byte of a non-negative .NET i32 length.
+const SEVEN_BIT_FINAL_I32_MASK: u8 = 0x07;
 
 /// Error returned when renderer initialization fails (singleton or IPC connect).
 #[derive(Debug, Error)]
@@ -17,6 +33,59 @@ pub enum InitError {
     /// Opening a subscriber or publisher failed.
     #[error("IPC connect: {0}")]
     IpcConnect(String),
+}
+
+/// Error returned when the attach renderer UDP handshake cannot be decoded.
+#[derive(Debug, Error)]
+enum AttachConnectionError {
+    /// The attach listener could not bind to the loopback port.
+    #[error("failed to bind UDP attach listener on 127.0.0.1:{ATTACH_RENDERER_PORT}: {0}")]
+    Bind(#[source] std::io::Error),
+    /// The attach listener failed while waiting for the host datagram.
+    #[error("failed to receive attach renderer parameters: {0}")]
+    Receive(#[source] std::io::Error),
+    /// The payload ended before the queue name length prefix completed.
+    #[error("attach renderer payload ended before the queue name length prefix completed")]
+    TruncatedStringLength,
+    /// The queue name length prefix is not a valid non-negative .NET i32.
+    #[error("attach renderer queue name length prefix is malformed")]
+    MalformedStringLength,
+    /// The queue name length does not fit the current target.
+    #[error("attach renderer queue name length {length} does not fit this target")]
+    QueueNameTooLong {
+        /// Queue name byte length decoded from the payload.
+        length: u64,
+        /// Integer conversion failure.
+        #[source]
+        source: TryFromIntError,
+    },
+    /// The payload ended before the declared queue name bytes completed.
+    #[error("attach renderer queue name needs {expected} bytes, but payload has {remaining}")]
+    TruncatedQueueName {
+        /// Expected UTF-8 queue name byte count.
+        expected: usize,
+        /// Bytes remaining after the length prefix.
+        remaining: usize,
+    },
+    /// The queue name bytes are not valid UTF-8.
+    #[error("attach renderer queue name is not valid UTF-8: {source}")]
+    InvalidQueueName {
+        /// UTF-8 decoder error.
+        #[source]
+        source: FromUtf8Error,
+    },
+    /// The payload ended before the queue capacity completed.
+    #[error("attach renderer queue capacity needs 8 bytes, but payload has {remaining}")]
+    TruncatedQueueCapacity {
+        /// Bytes remaining after the queue name.
+        remaining: usize,
+    },
+    /// The queue capacity was not a positive byte count.
+    #[error("attach renderer queue capacity must be positive, got {queue_capacity}")]
+    InvalidQueueCapacity {
+        /// Decoded queue capacity in bytes.
+        queue_capacity: i64,
+    },
 }
 
 /// Default queue capacity (8 MiB), matching `MessagingManager.DEFAULT_CAPACITY`.
@@ -46,90 +115,126 @@ pub fn try_claim_renderer_singleton() -> Result<(), InitError> {
 
 /// Parses `-QueueName` / `-QueueCapacity` from `std::env::args`, if present.
 ///
-/// If `-AttachRenderer` was passed, instead blocks and listens on UDP
-/// port 42512 for a message from the engine to provide these.
+/// If `-AttachRenderer` was passed, blocks and listens for the host's attach
+/// datagram instead.
 ///
 /// Returns [`None`] when arguments are missing or invalid so the process can run without IPC.
 pub fn get_connection_parameters() -> Option<ConnectionParams> {
     let args: Vec<String> = env::args().collect();
 
-    if args.iter().any(|arg| arg.ends_with("-AttachRenderer")) {
-        // Wait for a UDP packet with the connection parameters instead of parsing from command-line args.
-        logger::info!("Attempting to wait for Resonite to attach debug renderer.");
-        return get_connection_parameters_from_udp();
+    if has_attach_renderer_arg(&args) {
+        logger::info!("Waiting for Resonite to attach debug renderer.");
+        return get_connection_parameters_from_attach_renderer();
     }
+
     parse_connection_args(&args)
 }
 
-/// Wait for connection parameters by listening on UDP port 42512.
-fn get_connection_parameters_from_udp() -> Option<ConnectionParams> {
-    // The data is encoded in the format of dotnet's BinaryWriter:
-    // QueueName: length-prefixed UTF-8 (7-bit encoded i32 length, then bytes).
-    // QueueCapacity: 8-byte little-endian i64.
+/// Returns true when an argument selects the debug attach renderer path.
+fn has_attach_renderer_arg(args: &[impl AsRef<str>]) -> bool {
+    args.iter()
+        .any(|arg| arg_has_ascii_suffix(arg.as_ref(), "attachrenderer"))
+}
 
-    // Get data
-    let socket = std::net::UdpSocket::bind("127.0.0.1:42512").ok()?;
-    logger::info!("Listening on UDP port 42512. Launch Resonite with -AttachRenderer");
-    let mut buf = [0u8; 1024];
-    let (len, _) = socket.recv_from(&mut buf).ok()?;
-    let mut cursor = Cursor::new(&buf[..len]);
+/// Returns true when `arg` ends with `suffix`, ignoring ASCII case.
+fn arg_has_ascii_suffix(arg: &str, suffix: &str) -> bool {
+    let arg = arg.as_bytes();
+    let suffix = suffix.as_bytes();
+    arg.len() >= suffix.len() && arg[arg.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+}
 
-    // QueueName
-    let name_len = read_7bit_encoded_int(&mut cursor)?;
-    let queue_name = {
-        let mut name_buf = vec![0u8; name_len as usize];
-        cursor.read_exact(&mut name_buf).ok()?;
-        String::from_utf8(name_buf).ok()?
+/// Waits for connection parameters from the debug attach UDP handshake.
+fn get_connection_parameters_from_attach_renderer() -> Option<ConnectionParams> {
+    match receive_attach_renderer_parameters() {
+        Ok(params) => Some(params),
+        Err(error) => {
+            logger::warn!("Attach renderer handshake failed: {error}");
+            None
+        }
+    }
+}
+
+/// Receives and parses the debug attach UDP datagram.
+fn receive_attach_renderer_parameters() -> Result<ConnectionParams, AttachConnectionError> {
+    let socket = UdpSocket::bind(("127.0.0.1", ATTACH_RENDERER_PORT))
+        .map_err(AttachConnectionError::Bind)?;
+    logger::info!(
+        "Listening on UDP port {ATTACH_RENDERER_PORT}. Launch Resonite with -AttachRenderer"
+    );
+
+    let mut buf = [0u8; ATTACH_RENDERER_PACKET_MAX_BYTES];
+    let (len, _) = socket
+        .recv_from(&mut buf)
+        .map_err(AttachConnectionError::Receive)?;
+    parse_attach_renderer_packet(&buf[..len])
+}
+
+/// Parses the host attach datagram encoded by `.NET BinaryWriter`.
+fn parse_attach_renderer_packet(packet: &[u8]) -> Result<ConnectionParams, AttachConnectionError> {
+    let (queue_name_len, queue_name_offset) = read_7bit_encoded_usize(packet)?;
+    let Some(queue_name_end) = queue_name_offset.checked_add(queue_name_len) else {
+        return Err(AttachConnectionError::TruncatedQueueName {
+            expected: queue_name_len,
+            remaining: packet.len().saturating_sub(queue_name_offset),
+        });
     };
 
-    // QueueCapacity
-    let mut queue_capacity_buf: [u8; 8] = [0; 8];
-    cursor.read_exact(&mut queue_capacity_buf).ok()?;
-    let queue_capacity = i64::from_le_bytes(queue_capacity_buf);
-
-    // Validate
-    if queue_capacity <= 0 {
-        return None;
+    if queue_name_end > packet.len() {
+        return Err(AttachConnectionError::TruncatedQueueName {
+            expected: queue_name_len,
+            remaining: packet.len().saturating_sub(queue_name_offset),
+        });
     }
 
-    Some(ConnectionParams {
+    let queue_name = String::from_utf8(packet[queue_name_offset..queue_name_end].to_vec())
+        .map_err(|source| AttachConnectionError::InvalidQueueName { source })?;
+    let capacity_end = queue_name_end + size_of::<i64>();
+    if capacity_end > packet.len() {
+        return Err(AttachConnectionError::TruncatedQueueCapacity {
+            remaining: packet.len().saturating_sub(queue_name_end),
+        });
+    }
+
+    let mut queue_capacity_bytes = [0u8; size_of::<i64>()];
+    queue_capacity_bytes.copy_from_slice(&packet[queue_name_end..capacity_end]);
+    let queue_capacity = i64::from_le_bytes(queue_capacity_bytes);
+    if queue_capacity <= 0 {
+        return Err(AttachConnectionError::InvalidQueueCapacity { queue_capacity });
+    }
+
+    Ok(ConnectionParams {
         queue_name,
         queue_capacity,
     })
 }
 
-/// Read a 7-bit encoded int in the format used by dotnet BinaryWriter/BinaryReader for
-/// the length prefix on strings.
-fn read_7bit_encoded_int(cursor: &mut Cursor<&[u8]>) -> Option<i32> {
-    // Integer is encoded as a series of bytes, where the high bit
-    // indicates whether there is another bytes to come, and the remaining
-    // 7 bits are shifted into place from LSB to MSB. (Small numbers need fewer bytes this way.)
+/// Reads a .NET 7-bit encoded non-negative i32 length from `packet`.
+fn read_7bit_encoded_usize(packet: &[u8]) -> Result<(usize, usize), AttachConnectionError> {
+    let mut value = 0u32;
 
-    const FLAG_MORE: u8 = 0x80;
-    const MASK: u8 = !FLAG_MORE;
+    for byte_index in 0..MAX_7BIT_ENCODED_I32_BYTES {
+        let byte = *packet
+            .get(byte_index)
+            .ok_or(AttachConnectionError::TruncatedStringLength)?;
 
-    let mut out: u32 = 0;
-    let mut shift: u32 = 0;
-
-    let mut buf: [u8; 1] = [0];
-
-    // Keep grabbing bytes from the cursor until that fails or we've got our int.
-    loop {
-        cursor.read_exact(&mut buf).ok()?;
-
-        out |= ((buf[0] & MASK) as u32) << shift;
-
-        if buf[0] & FLAG_MORE == 0 {
-            break;
+        if byte_index == MAX_7BIT_ENCODED_I32_BYTES - 1 && byte & !SEVEN_BIT_FINAL_I32_MASK != 0 {
+            return Err(AttachConnectionError::MalformedStringLength);
         }
 
-        shift += 7;
-        if shift >= 32 {
-            return None;
+        value |= u32::from(byte & SEVEN_BIT_VALUE_MASK) << (byte_index * 7);
+
+        if byte & SEVEN_BIT_CONTINUATION == 0 {
+            let length = usize::try_from(value).map_err(|source| {
+                AttachConnectionError::QueueNameTooLong {
+                    length: u64::from(value),
+                    source,
+                }
+            })?;
+            return Ok((length, byte_index + 1));
         }
     }
 
-    Some(out as i32)
+    Err(AttachConnectionError::MalformedStringLength)
 }
 
 /// Scans `args` for the first complete `-QueueName` / `-QueueCapacity` pair (case-insensitive
@@ -153,14 +258,13 @@ fn parse_connection_args(args: &[impl AsRef<str>]) -> Option<ConnectionParams> {
             break;
         }
 
-        let arg_lower = arg.as_ref().to_lowercase();
-        if arg_lower.ends_with("queuename") {
+        if arg_has_ascii_suffix(arg.as_ref(), "queuename") {
             if queue_name.is_some() {
                 return None;
             }
             queue_name = Some(args[next_i].as_ref().to_owned());
             i = next_i;
-        } else if arg_lower.ends_with("queuecapacity") {
+        } else if arg_has_ascii_suffix(arg.as_ref(), "queuecapacity") {
             if queue_capacity.is_some_and(|c| c > 0) {
                 return None;
             }
@@ -204,6 +308,134 @@ pub fn publisher_queue_name(base: &str, channel: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn attach_packet(queue_name: &str, queue_capacity: i64) -> Vec<u8> {
+        let mut packet = Vec::new();
+        write_7bit_encoded_usize(queue_name.len(), &mut packet);
+        packet.extend_from_slice(queue_name.as_bytes());
+        packet.extend_from_slice(&queue_capacity.to_le_bytes());
+        packet
+    }
+
+    fn write_7bit_encoded_usize(mut value: usize, packet: &mut Vec<u8>) {
+        while value >= usize::from(SEVEN_BIT_CONTINUATION) {
+            packet.push((value as u8 & SEVEN_BIT_VALUE_MASK) | SEVEN_BIT_CONTINUATION);
+            value >>= 7;
+        }
+        packet.push(value as u8);
+    }
+
+    #[test]
+    fn has_attach_renderer_arg_matches_case_insensitive_suffix() {
+        assert!(has_attach_renderer_arg(&["renderide", "-AttachRenderer"]));
+        assert!(has_attach_renderer_arg(&["renderide", "/attachrenderer"]));
+        assert!(has_attach_renderer_arg(&[
+            "renderide",
+            "--renderide-ATTACHRENDERER"
+        ]));
+        assert!(!has_attach_renderer_arg(&[
+            "renderide",
+            "-AttachRendererSuffix"
+        ]));
+    }
+
+    #[test]
+    fn parse_attach_renderer_packet_accepts_binary_writer_payload() {
+        assert_eq!(
+            parse_attach_renderer_packet(&attach_packet("RenderideQueue", 8_388_608))
+                .expect("attach packet should parse"),
+            ConnectionParams {
+                queue_name: "RenderideQueue".into(),
+                queue_capacity: 8_388_608,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_attach_renderer_packet_accepts_multibyte_string_length() {
+        let queue_name = "q".repeat(130);
+        assert_eq!(
+            parse_attach_renderer_packet(&attach_packet(&queue_name, 4096))
+                .expect("attach packet should parse"),
+            ConnectionParams {
+                queue_name,
+                queue_capacity: 4096,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_attach_renderer_packet_rejects_truncated_string_length() {
+        let error = parse_attach_renderer_packet(&[SEVEN_BIT_CONTINUATION])
+            .expect_err("length prefix should be incomplete");
+        assert!(matches!(
+            error,
+            AttachConnectionError::TruncatedStringLength
+        ));
+    }
+
+    #[test]
+    fn parse_attach_renderer_packet_rejects_malformed_string_length() {
+        let error = parse_attach_renderer_packet(&[0xff, 0xff, 0xff, 0xff, 0x08])
+            .expect_err("length prefix should be malformed");
+        assert!(matches!(
+            error,
+            AttachConnectionError::MalformedStringLength
+        ));
+    }
+
+    #[test]
+    fn parse_attach_renderer_packet_rejects_truncated_queue_name() {
+        let error =
+            parse_attach_renderer_packet(&[4, b'n']).expect_err("queue name should be incomplete");
+        assert!(matches!(
+            error,
+            AttachConnectionError::TruncatedQueueName {
+                expected: 4,
+                remaining: 1
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_attach_renderer_packet_rejects_invalid_utf8_queue_name() {
+        let mut packet = vec![1, 0xff];
+        packet.extend_from_slice(&4096_i64.to_le_bytes());
+
+        let error = parse_attach_renderer_packet(&packet)
+            .expect_err("queue name should reject invalid UTF-8");
+        assert!(matches!(
+            error,
+            AttachConnectionError::InvalidQueueName { .. }
+        ));
+    }
+
+    #[test]
+    fn parse_attach_renderer_packet_rejects_truncated_queue_capacity() {
+        let error = parse_attach_renderer_packet(&[4, b'n', b'a', b'm', b'e'])
+            .expect_err("queue capacity should be incomplete");
+        assert!(matches!(
+            error,
+            AttachConnectionError::TruncatedQueueCapacity { remaining: 0 }
+        ));
+    }
+
+    #[test]
+    fn parse_attach_renderer_packet_rejects_non_positive_queue_capacity() {
+        let zero = parse_attach_renderer_packet(&attach_packet("queue", 0))
+            .expect_err("zero capacity should be invalid");
+        assert!(matches!(
+            zero,
+            AttachConnectionError::InvalidQueueCapacity { queue_capacity: 0 }
+        ));
+
+        let negative = parse_attach_renderer_packet(&attach_packet("queue", -1))
+            .expect_err("negative capacity should be invalid");
+        assert!(matches!(
+            negative,
+            AttachConnectionError::InvalidQueueCapacity { queue_capacity: -1 }
+        ));
+    }
 
     #[test]
     fn parses_queue_name_and_capacity_case_insensitive() {
