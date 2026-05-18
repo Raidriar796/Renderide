@@ -25,6 +25,9 @@ use crate::world_mesh::draw_prep::collect::prepared::prepared_draws_share_render
 use super::super::item::stacked_material_submesh_range;
 use super::{FramePreparedDraw, FramePreparedRun};
 
+const MATERIAL_KEY_SIGNATURE_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const MATERIAL_KEY_SIGNATURE_PRIME: u64 = 0x0000_0100_0000_01b3;
+
 /// Renderer count in one render space above which expansion fans out across Rayon chunks.
 pub(in crate::world_mesh::draw_prep) const PREPARED_EXPAND_PARALLEL_MIN_RENDERERS: usize = 256;
 /// Renderer slice width used by aggressive prepared-renderable expansion.
@@ -69,29 +72,61 @@ struct RenderableExpansion<'a> {
     cull_geometry: Option<MeshCullGeometry>,
 }
 
+/// Signature for an empty prepared material live set.
+#[inline]
+pub(in crate::world_mesh::draw_prep) const fn empty_material_key_signature() -> u64 {
+    MATERIAL_KEY_SIGNATURE_OFFSET
+}
+
+#[inline]
+fn mix_material_key_signature(
+    mut signature: u64,
+    material_asset_id: i32,
+    property_block_id: Option<i32>,
+) -> u64 {
+    let material_bits = material_asset_id as i64 as u64;
+    let property_bits = property_block_id.map_or(0x9e37_79b9_7f4a_7c15, |id| id as i64 as u64);
+    for part in [
+        material_bits,
+        property_bits,
+        material_bits.rotate_left(17) ^ property_bits.rotate_right(11),
+    ] {
+        signature ^= part;
+        signature = signature.wrapping_mul(MATERIAL_KEY_SIGNATURE_PRIME);
+    }
+    signature
+}
+
 /// Walks `draws` once and refreshes renderer-run ranges plus unique material/property keys.
 ///
 /// Runs are detected post-build instead of plumbed through the parallel expansion so the
 /// multi-space worker output can be merged with `Vec::append` without per-space offset adjustment.
+///
+/// Returns a deterministic signature of the first-seen unique material/property live set so
+/// downstream caches can prove that an unchanged material generation also has unchanged
+/// membership.
 pub(in crate::world_mesh::draw_prep) fn populate_runs_and_material_keys(
     draws: &[FramePreparedDraw],
     runs: &mut Vec<FramePreparedRun>,
     material_property_keys: &mut Vec<(i32, Option<i32>)>,
     seen: &mut HashSet<(i32, Option<i32>)>,
-) {
+) -> u64 {
     profiling::scope!("mesh::prepared_renderables::populate_run_starts");
     runs.clear();
     material_property_keys.clear();
     seen.clear();
     if draws.is_empty() {
-        return;
+        return empty_material_key_signature();
     }
+    let mut signature = empty_material_key_signature();
     let mut run_start = 0usize;
     let mut prev = &draws[0];
     for (idx, d) in draws.iter().enumerate() {
         let key = (d.material_asset_id, d.property_block_id);
         if seen.insert(key) {
             material_property_keys.push(key);
+            signature =
+                mix_material_key_signature(signature, d.material_asset_id, d.property_block_id);
         }
         if idx > 0 && !prepared_draws_share_renderer(prev, d) {
             runs.push(FramePreparedRun {
@@ -106,6 +141,7 @@ pub(in crate::world_mesh::draw_prep) fn populate_runs_and_material_keys(
         start: run_start as u32,
         end: draws.len() as u32,
     });
+    signature ^ (material_property_keys.len() as u64)
 }
 
 /// Upper bound on prepared draws produced by `space_id`, used to pre-size per-space output
@@ -155,6 +191,7 @@ pub(in crate::world_mesh::draw_prep) fn expand_space_into(
     render_context: RenderingContext,
     space_id: RenderSpaceId,
 ) {
+    profiling::scope!("mesh::prepared_renderables::expand_space");
     let Some(space) = scene.space(space_id) else {
         return;
     };
@@ -184,6 +221,7 @@ pub(in crate::world_mesh::draw_prep) fn expand_space_into_aggressive(
     render_context: RenderingContext,
     space_id: RenderSpaceId,
 ) {
+    profiling::scope!("mesh::prepared_renderables::expand_space_aggressive");
     if renderer_count_for_space(scene, space_id) < PREPARED_EXPAND_PARALLEL_MIN_RENDERERS {
         expand_space_into(out, scene, mesh_pool, render_context, space_id);
         return;
@@ -206,6 +244,7 @@ fn expand_space_into_parallel_chunks(
     render_context: RenderingContext,
     space_id: RenderSpaceId,
 ) {
+    profiling::scope!("mesh::prepared_renderables::expand_parallel_chunks");
     let Some(space) = scene.space(space_id) else {
         return;
     };
@@ -213,23 +252,29 @@ fn expand_space_into_parallel_chunks(
         return;
     }
     let mut specs = Vec::new();
-    push_expansion_chunks(
-        &mut specs,
-        ExpansionChunkKind::Static,
-        space.static_mesh_renderers().len(),
-    );
-    push_expansion_chunks(
-        &mut specs,
-        ExpansionChunkKind::Skinned,
-        space.skinned_mesh_renderers().len(),
-    );
+    {
+        profiling::scope!("mesh::prepared_renderables::build_renderer_chunks");
+        push_expansion_chunks(
+            &mut specs,
+            ExpansionChunkKind::Static,
+            space.static_mesh_renderers().len(),
+        );
+        push_expansion_chunks(
+            &mut specs,
+            ExpansionChunkKind::Skinned,
+            space.skinned_mesh_renderers().len(),
+        );
+    }
     if specs.len() < 2 {
         expand_space_into(out, scene, mesh_pool, render_context, space_id);
         return;
     }
 
-    if chunk_scratch.len() < specs.len() {
-        chunk_scratch.resize_with(specs.len(), Vec::new);
+    {
+        profiling::scope!("mesh::prepared_renderables::resize_chunk_scratch");
+        if chunk_scratch.len() < specs.len() {
+            chunk_scratch.resize_with(specs.len(), Vec::new);
+        }
     }
     chunk_scratch
         .par_iter_mut()
@@ -242,14 +287,17 @@ fn expand_space_into_parallel_chunks(
             expand_space_chunk_into(chunk_out, scene, mesh_pool, render_context, space_id, spec);
         });
 
-    let total = chunk_scratch
-        .iter()
-        .take(specs.len())
-        .map(Vec::len)
-        .sum::<usize>();
-    out.reserve(total);
-    for chunk in chunk_scratch.iter_mut().take(specs.len()) {
-        out.append(chunk);
+    {
+        profiling::scope!("mesh::prepared_renderables::merge_renderer_chunks");
+        let total = chunk_scratch
+            .iter()
+            .take(specs.len())
+            .map(Vec::len)
+            .sum::<usize>();
+        out.reserve(total);
+        for chunk in chunk_scratch.iter_mut().take(specs.len()) {
+            out.append(chunk);
+        }
     }
 }
 
@@ -293,12 +341,14 @@ impl<'a> ExpandCtx<'a> {
 }
 
 fn expand_static_list(mut ctx: ExpandCtx<'_>, renderers: &[StaticMeshRenderer]) {
+    profiling::scope!("mesh::prepared_renderables::expand_static_list");
     for (renderable_index, r) in renderers.iter().enumerate() {
         try_expand_one_renderer(&mut ctx, renderable_index, r, /*skinned=*/ false, None);
     }
 }
 
 fn expand_skinned_list(mut ctx: ExpandCtx<'_>, renderers: &[SkinnedMeshRenderer]) {
+    profiling::scope!("mesh::prepared_renderables::expand_skinned_list");
     for (renderable_index, sk) in renderers.iter().enumerate() {
         try_expand_one_renderer(
             &mut ctx,
@@ -318,6 +368,7 @@ fn expand_space_chunk_into(
     space_id: RenderSpaceId,
     spec: &ExpansionChunkSpec,
 ) {
+    profiling::scope!("mesh::prepared_renderables::expand_renderer_chunk");
     let Some(space) = scene.space(space_id) else {
         return;
     };

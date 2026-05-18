@@ -7,10 +7,14 @@
 
 //#texture_default _NearTex white
 //#texture_default _FarTex white
+//#mat_default _Distance float 1.0
+//#mat_default _FarColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _NearColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _Transition float 0.1
+//#mat_default _Cutoff float 0.5
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
-#import renderide::material::alpha_clip_sample as acs
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
 #import renderide::core::uv as uvu
@@ -105,7 +109,7 @@ fn distance_lerp(p: vec3<f32>) -> f32 {
     return clamp((dist / transition) + mat._Transition * 0.5, 0.0, 1.0);
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let l = distance_lerp(lerp_position(in));
@@ -119,10 +123,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let c = mix(near, far, l);
 
     if (kw_ALPHATEST()) {
-        let near_alpha = acs::texture_alpha_base_mip(_NearTex, _NearTex_sampler, near_uv) * mat._NearColor.a;
-        let far_alpha = acs::texture_alpha_base_mip(_FarTex, _FarTex_sampler, far_uv) * mat._FarColor.a;
-        let clip_a = mix(near_alpha, far_alpha, l);
-        if (clip_a <= mat._Cutoff) {
+        if (c.a <= mat._Cutoff) {
             discard;
         }
     }

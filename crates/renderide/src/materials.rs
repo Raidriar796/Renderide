@@ -31,37 +31,27 @@
 //!
 //! # Pass system
 //!
-//! Every material WGSL under `shaders/materials/*.wgsl` declares one or more `//#pass <kind>`
+//! Every material WGSL under `shaders/materials/*.wgsl` declares one or more Unity-style `//#pass`
 //! comment directives, each sitting directly above an `@fragment` entry point. The build script
-//! parses them into a static [`MaterialPassDesc`] table per stem. Each desc becomes one
+//! parses each directive into a static [`MaterialPassDesc`] table per stem. Each desc becomes one
 //! `wgpu::RenderPipeline`; the forward encode loop dispatches all pipelines for every draw that
 //! binds the material, in declared order.
 //!
 //! The directive does three things at once:
-//! 1. Selects which `@fragment` entry points become pipelines (and what to label them).
-//! 2. Picks a canonical render-state recipe ([`pass_from_kind`]).
+//! 1. Selects which `@fragment` entry points become pipelines and what to label them.
+//! 2. Declares explicit pipeline state: blend, depth write/test, cull, color mask, stencil, offset.
 //! 3. Counts the draws per material -- N directives => N pipelines => N `draw_indexed` calls.
 //!
-//! Recognized kinds:
+//! Recognized pass types are intentionally small: `type=forward` for raster material draws and
+//! `type=depth_prepass` for authored depth-only prepasses. Specialized Unity behavior is expressed
+//! through metadata such as `blend=transparent_material`, `zwrite=material(off)`, `cull=front`,
+//! `color_mask=0`, and `offset=material(0,0)` rather than by multiplying pass kind variants.
 //!
-//! | Kind | Render-state recipe | Use case |
-//! |---|---|---|
-//! | `forward` | `Cull Back`, `ZWrite On`, blend driven by host `_SrcBlend`/`_DstBlend` at draw time | the main color draw |
-//! | `forward_filter` | `forward` plus Unity separate alpha `Max` blending even for `Blend One Zero` | grab-pass filter materials |
-//! | `forward_two_sided` | `Cull Off`, `ZWrite On`, blend driven by host `_SrcBlend`/`_DstBlend` at draw time | main color draw for authored two-sided materials |
-//! | `transparent_rgb` | `Blend SrcAlpha OneMinusSrcAlpha`, `ColorMask RGB`, `ZWrite Off`, `Cull Off` | fixed-state transparent RGB-only unlit draw |
-//! | `outline` | `Cull Front` | silhouette over an inflated geometry shell |
-//! | `stencil` | `Cull Front`, `ColorMask 0`, `ZWrite Off` | stencil mask draw |
-//! | `depth_prepass` | `ColorMask 0` | early-Z prepass (depth only) |
-//! | `overlay_front` | overlay blend, `ZWrite On` | layered draw on top of existing geometry |
-//! | `overlay_behind` | overlay blend, inverted depth compare | layered draw behind existing geometry |
-//!
-//! **Why kind defaults exist when the host already sends pipeline state.** The host's IPC sends
-//! one `_SrcBlend`/`_ZWrite`/`_Cull`/etc. set per material -- not per pass. The directive fills the
-//! gap host properties can't fill: multi-draw structure, auxiliary-pass state (e.g. `Outline`'s
-//! `Cull Front` when the host's `_Cull` belongs to the forward pass), and state Unity doesn't
-//! have a property for (`OverlayBehind`'s inverted depth compare). Each kind carries a policy for
-//! which host properties may still overlay the kind defaults; `depth_prepass`, for example, accepts
+//! **Why explicit pass metadata exists when the host already sends pipeline state.** The host's
+//! IPC sends one `_SrcBlend`/`_ZWrite`/`_Cull`/etc. set per material -- not per pass. The directive
+//! fills the gap host properties cannot fill: multi-draw structure, auxiliary-pass state, and
+//! source-authored state Unity exposes in ShaderLab pass blocks. Each field records whether the
+//! matching host property may override the authored fallback; `depth_prepass`, for example, accepts
 //! stencil / depth-test / offset state but preserves its authored `ZWrite On` and `ColorMask 0`.
 //!
 //! **Every material WGSL must declare at least one `//#pass`** -- the build script rejects empty
@@ -118,12 +108,12 @@ pub(crate) use embedded::{
     embedded_stem_uses_ui_transparent_fallback,
 };
 
-#[cfg(test)]
-pub(crate) use material_passes::MaterialPassState;
 pub(crate) use material_passes::{
-    MaterialBlendMode, MaterialPassDesc, MaterialPipelinePropertyIds, PassKind,
+    COLOR_WRITES_NONE, MaterialBlendMode, MaterialPassDesc, MaterialPassState,
+    MaterialPipelinePropertyIds, MaterialRenderStatePolicy, PASS_BLEND_ONE_ONE_MINUS_SRC_ALPHA,
+    PASS_BLEND_OVERLAY_NOOP_COLOR_MAX_ALPHA, PASS_BLEND_SRC_ALPHA_ONE_MINUS_SRC_ALPHA, PassType,
     material_blend_mode_from_maps, materialized_embedded_pass_for_blend_mode,
-    materialized_pass_for_blend_mode, pass_from_kind,
+    materialized_pass_for_blend_mode,
 };
 pub(crate) use material_passes::{PropertyMapRef, first_float_from_maps, first_vec4_from_maps};
 pub(crate) use pipeline_build_error::PipelineBuildError;
@@ -162,7 +152,7 @@ pub(crate) use null_pipeline::NullFamily;
 pub(crate) use pipeline_property_resolver::PipelinePropertyResolver;
 
 /// Shader route table, optional material asset registry, and WGSL composition patches.
-pub(crate) use registry::MaterialRegistry;
+pub(crate) use registry::{MaterialPipelineResolution, MaterialRegistry};
 pub(crate) use router::{MaterialRouter, resolve_raster_pipeline};
 
 /// Static shader feature flags (multiview, etc.) keyed into the pipeline cache.

@@ -10,13 +10,11 @@
 
 #import renderide::xiexe::toon2::base as xb
 #import renderide::xiexe::toon2::variant_bits as xvb
-#import renderide::frame::globals as rg
 #import renderide::mesh::vertex as mv
 #import renderide::draw::per_draw as pd
 #import renderide::pbs::normal as pnorm
 #import renderide::core::normal_decode as nd
 #import renderide::core::uv as uvu
-#import renderide::material::alpha_clip_sample as acs
 
 /// Forward-pass vertex transform. Builds the world-space TBN, applies the per-eye VP,
 /// and forwards UVs / vertex color unchanged. Outline extrusion lives in
@@ -53,33 +51,6 @@ fn vertex_main(
     return out;
 }
 
-/// Builds a perturbed TBN from the interpolated geometry frame. When the `NORMAL_MAP` keyword is
-/// set, `_BumpMap` is sampled and decoded via Unity's `UnpackScaleNormal`. Detail-normal blending
-/// is an XSToon3 feature absent from 2.0 and is not performed here.
-///
-/// `flip_back_face` toggles the dual-sided correction. The forward path passes `true` so
-/// back-facing fragments of two-sided meshes light from the visible side; the outline
-/// path passes `false` because the visible outline fragments are back-faces of an
-/// extruded shell whose geometric normals already face outward.
-fn decode_normal_world(
-    uv_normal: vec2<f32>,
-    world_n: vec3<f32>,
-    world_t: vec3<f32>,
-    world_b: vec3<f32>,
-    front_facing: bool,
-    flip_back_face: bool,
-) -> mat3x3<f32> {
-    return decode_normal_world_for_layout(
-        uv_normal,
-        world_n,
-        world_t,
-        world_b,
-        front_facing,
-        flip_back_face,
-        xvb::XTOON_KEYWORD_LAYOUT_GENERIC,
-    );
-}
-
 /// Builds a perturbed TBN from the interpolated geometry frame for a selected keyword layout.
 fn decode_normal_world_for_layout(
     uv_normal: vec2<f32>,
@@ -114,34 +85,6 @@ fn decode_normal_world_for_layout(
     return mat3x3<f32>(t, b, n);
 }
 
-/// Decodes albedo, metallic-gloss, emission, AO, thickness, ramp-mask and the perturbed
-/// TBN into a `SurfaceData` blob. `flip_back_face` is forwarded to `decode_normal_world`
-/// so the outline path can opt out of the dual-sided flip.
-fn sample_surface(
-    flip_back_face: bool,
-    front_facing: bool,
-    world_pos: vec3<f32>,
-    world_n: vec3<f32>,
-    world_t: vec3<f32>,
-    world_b: vec3<f32>,
-    uv_primary: vec2<f32>,
-    uv_secondary: vec2<f32>,
-    color: vec4<f32>,
-) -> xb::SurfaceData {
-    return sample_surface_for_layout(
-        flip_back_face,
-        front_facing,
-        world_pos,
-        world_n,
-        world_t,
-        world_b,
-        uv_primary,
-        uv_secondary,
-        color,
-        xvb::XTOON_KEYWORD_LAYOUT_GENERIC,
-    );
-}
-
 /// Decodes surface data for a selected XSToon keyword layout.
 fn sample_surface_for_layout(
     flip_back_face: bool,
@@ -164,7 +107,7 @@ fn sample_surface_for_layout(
     let uv_reflectivity = uvu::apply_st(xb::uv_select(uv_primary, uv_secondary, xb::mat._UVSetReflectivity), xb::mat._ReflectivityMask_ST);
 
     var albedo = textureSample(xb::_MainTex, xb::_MainTex_sampler, uv_albedo) * xb::mat._Color;
-    let clip_alpha = xb::mat._Color.a * acs::texture_alpha_base_mip(xb::_MainTex, xb::_MainTex_sampler, uv_albedo);
+    let clip_alpha = albedo.a;
     if (xvb::vertex_color_albedo_enabled_for_layout(keyword_layout)) {
         albedo = vec4<f32>(albedo.rgb * color.rgb, albedo.a);
     }
@@ -195,7 +138,7 @@ fn sample_surface_for_layout(
         smoothness = clamp(xb::mat._Glossiness * mg.a, 0.0, 1.0);
     }
     var roughness = 1.0 - smoothness;
-    roughness = clamp(roughness * (1.7 - 0.7 * roughness), 0.045, 1.0);
+    roughness = clamp(roughness * (1.7 - 0.7 * roughness), 0.0, 1.0);
 
     // Direct-lighting albedo is the metallic-discounted tinted base so a perfect metal
     // contributes no diffuse term. Multiplication is linear w.r.t. the saturation lerp, so

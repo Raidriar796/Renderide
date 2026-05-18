@@ -3,6 +3,7 @@
 
 
 //#texture_default _MainTexture white
+//#mat_default _Blend vec4 1.0 1.0 1.0 1.0
 
 #import renderide::frame::globals as rg
 #import renderide::mesh::vertex as mv
@@ -35,7 +36,7 @@ fn vs_main(
 #endif
 }
 
-//#pass overlay_always
+//#pass type=forward name=overlay_always blend=alpha zwrite=off ztest=always color_mask=rgba cull=back stencil=off offset=0,0
 @fragment
 fn fs_main(
     @location(0) uv: vec2<f32>,

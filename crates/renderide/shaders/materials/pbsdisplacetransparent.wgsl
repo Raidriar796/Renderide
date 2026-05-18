@@ -20,6 +20,13 @@
 //#texture_default _VertexOffsetMap black
 //#texture_default _UVOffsetMap black
 //#texture_default _PositionOffsetMap black
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _PositionOffsetMagnitude vec4 1.0 1.0 0.0 0.0
+//#mat_default _UVOffsetMagnitude float 0.1
+//#mat_default _VertexOffsetMagnitude float 0.1
+//#mat_default _AlphaClip float 0.5
+//#mat_default _Glossiness float 0.5
 
 #import renderide::mesh::vertex as mv
 #import renderide::draw::per_draw as pd
@@ -29,6 +36,7 @@
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::material::variant_bits as vb
+#import renderide::core::math as rmath
 #import renderide::core::normal_decode as nd
 #import renderide::core::uv as uvu
 
@@ -158,7 +166,7 @@ fn vs_main(
     let uv = displaced_uv.uv;
 
     let world_p = d.model * vec4<f32>(displaced, 1.0);
-    let wn = normalize(d.normal_matrix * n.xyz);
+    let wn = rmath::safe_normalize(d.normal_matrix * n.xyz, vec3<f32>(0.0, 1.0, 0.0));
     let wt = mv::world_tangent(d, t);
 #ifdef MULTIVIEW
     let vp = mv::select_view_proj(d, view_idx);
@@ -232,12 +240,21 @@ fn shade(
 
     let n = sample_normal_world(uv_main, world_n, world_t, front_facing);
     let base_color = c.rgb;
-    let surface = psurf::metallic(base_color, c.a, metallic, roughness, occlusion, n, emission);
+    let surface = psurf::metallic_with_geometric_normal(
+        base_color,
+        c.a,
+        metallic,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        emission,
+    );
     let options = plight::ClusterLightingOptions(include_directional, include_local, true, true);
     return plight::shade_metallic_transparent_clustered(frag_xy, world_pos, view_layer, surface, options);
 }
 
-//#pass forward_transparent
+//#pass type=forward name=forward_transparent blend=transparent_material zwrite=material(off) cull=material(off) color_mask=material(rgba)
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

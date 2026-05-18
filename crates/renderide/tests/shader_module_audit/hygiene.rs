@@ -132,6 +132,55 @@ fn material_roots_do_not_redeclare_shared_helpers() -> io::Result<()> {
 }
 
 #[test]
+fn volume_material_roots_clamp_emitted_source_rgb() -> io::Result<()> {
+    let volume_box = module_source("material/volume_box.wgsl")?;
+    assert!(
+        volume_box.contains("fn clamp_volume_source_rgb(color: vec4<f32>) -> vec4<f32>")
+            && volume_box.contains("clamp(color.rgb, vec3<f32>(0.0), vec3<f32>(1.0))"),
+        "volume_box must expose a helper that clamps emitted volume source RGB"
+    );
+
+    for material in ["fogboxvolume.wgsl", "volumeunlit.wgsl"] {
+        let src = material_source(material)?;
+        assert!(
+            src.contains("vol::clamp_volume_source_rgb("),
+            "{material} must clamp emitted source RGB before additive retention"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn alpha_clip_paths_do_not_force_base_mip_sampling() -> io::Result<()> {
+    let mut offenders = Vec::new();
+    for path in wgsl_files_recursive("shaders")? {
+        let src = source_file(&path)?;
+        for forbidden in [
+            "renderide::material::alpha_clip_sample",
+            "texture_alpha_base_mip",
+            "texture_rgba_base_mip",
+            "mask_luminance_mul_base_mip",
+            "sample_rgba_lod0",
+        ] {
+            if src.contains(forbidden) {
+                offenders.push(format!(
+                    "{} still contains `{forbidden}`",
+                    file_label(&path)
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "alpha clipping must use the same filtered texture samples as visible color:\n  {}",
+        offenders.join("\n  ")
+    );
+    Ok(())
+}
+
+#[test]
 fn grab_filter_roots_use_shared_filter_common_helpers() -> io::Result<()> {
     for material in [
         "blur.wgsl",

@@ -10,6 +10,8 @@
 
 //#texture_default _ReflectionTex white
 //#texture_default _NormalMap bump
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _Cutoff float 0.5
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
@@ -88,7 +90,7 @@ fn vs_main(
     return out;
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main(
     @location(0) screen_uv: vec3<f32>,

@@ -10,6 +10,16 @@
 //#texture_default _SpecGlossMap white
 //#texture_default _BumpMap bump
 //#texture_default _EmissionMap white
+//#mat_default _SpecularHighlights float 1.0
+//#mat_default _GlossyReflections float 1.0
+//#mat_default _BumpScale float 1.0
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _Fresnel float 1.0
+//#mat_default _FresnelTint vec4 1.0 1.0 1.0 1.0
+//#mat_default _Glossiness float 0.5
+//#mat_default _FresnelDiffCont float 0.5
+//#mat_default _FresnelPower float 0.5
+//#mat_default _FresnelStrength float 0.2
 
 #import renderide::lighting::birp as bl
 #import renderide::frame::globals as rg
@@ -168,7 +178,7 @@ fn shade(
     return vec4<f32>(lo + emission + fresnel, c.a);
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

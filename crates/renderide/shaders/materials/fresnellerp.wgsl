@@ -10,6 +10,14 @@
 //#texture_default _LerpTex black
 //#texture_default _NormalMap0 bump
 //#texture_default _NormalMap1 bump
+//#mat_default _Exp0 float 1.0
+//#mat_default _Exp1 float 1.0
+//#mat_default _FarColor0 vec4 0.0 0.0 0.0 1.0
+//#mat_default _FarColor1 vec4 0.2 0.2 0.2 1.0
+//#mat_default _GammaCurve float 2.2
+//#mat_default _LerpPolarPow float 1.0
+//#mat_default _NearColor0 vec4 1.0 1.0 1.0 1.0
+//#mat_default _NearColor1 vec4 0.8 0.8 0.8 0.8
 
 #import renderide::frame::globals as rg
 #import renderide::pbs::normal as pnorm
@@ -134,7 +142,7 @@ fn sample_normal(uv: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, l: f32) 
     return n;
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
     let l = compute_lerp(in.primary_uv);

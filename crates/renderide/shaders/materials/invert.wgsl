@@ -1,6 +1,8 @@
 //! Grab-pass color inversion filter (`Shader "Filters/Invert"`).
 
 
+//#mat_default _Lerp float 1.0
+
 #import renderide::post::filter_vertex as fv
 #import renderide::post::filter_common as fc
 #import renderide::material::variant_bits as vb
@@ -42,7 +44,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward_filter
+//#pass type=forward name=forward_filter blend=material_filter
 @fragment
 fn fs_main(in: fv::RectVertexOutput) -> @location(0) vec4<f32> {
     fc::discard_rect_if_enabled(in.obj_xy, mat._Rect, kw_RECTCLIP());

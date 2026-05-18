@@ -4,6 +4,10 @@
 //! shader-specific keyword bits locally.
 
 //#texture_default _Gradient black
+//#mat_default _Lerp float 1.0
+//#mat_default _RatioB float 0.11
+//#mat_default _RatioG float 0.59
+//#mat_default _RatioR float 0.3
 
 #import renderide::post::filter_vertex as fv
 #import renderide::post::filter_common as fc
@@ -57,7 +61,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward_filter
+//#pass type=forward name=forward_filter blend=material_filter
 @fragment
 fn fs_main(in: fv::RectVertexOutput) -> @location(0) vec4<f32> {
     fc::discard_rect_if_enabled(in.obj_xy, mat._Rect, kw_RECTCLIP());

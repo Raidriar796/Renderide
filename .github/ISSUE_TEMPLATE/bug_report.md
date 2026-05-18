@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report incorrect rendering, input, windowing, or runtime behavior.
+about: Report incorrect rendering, input, windowing, or runtime behavior of existing features.
 title: ""
 labels: bug
 assignees: ""

@@ -8,10 +8,13 @@ use std::sync::Arc;
 
 use crate::embedded_shaders;
 use crate::embedded_shaders::EmbeddedTextureDefaultKind;
+use crate::embedded_shaders::{EmbeddedMaterialDefaultKind, EmbeddedMaterialDefaultValue};
 use crate::materials::host_data::PropertyIdRegistry;
-use crate::materials::{ReflectedRasterLayout, reflect_raster_material_wgsl};
+use crate::materials::{
+    ReflectedRasterLayout, ReflectedUniformScalarKind, reflect_raster_material_wgsl,
+};
 
-use super::uniform_pack::MaterialUniformValueSpaces;
+use super::uniform_pack::{MaterialUniformDefaults, MaterialUniformValueSpaces};
 
 /// Cached reflection and layout for one composed shader stem.
 pub(crate) struct StemMaterialLayout {
@@ -19,6 +22,7 @@ pub(crate) struct StemMaterialLayout {
     pub(crate) reflected: ReflectedRasterLayout,
     pub(crate) ids: Arc<StemEmbeddedPropertyIds>,
     pub(crate) uniform_value_spaces: MaterialUniformValueSpaces,
+    pub(crate) uniform_default_by_field: MaterialUniformDefaults,
     pub(crate) texture_default_by_binding: HashMap<u32, EmbeddedTextureDefaultKind>,
 }
 
@@ -129,6 +133,71 @@ fn texture_default_bindings_for_stem(
     Ok(defaults)
 }
 
+/// Maps embedded material defaults onto reflected uniform fields for a composed shader stem.
+fn material_default_uniform_fields_for_stem(
+    stem: &str,
+    reflected: &ReflectedRasterLayout,
+) -> Result<MaterialUniformDefaults, String> {
+    let mut defaults = MaterialUniformDefaults::default();
+    let material_defaults = embedded_shaders::embedded_target_material_defaults(stem);
+    if material_defaults.is_empty() {
+        return Ok(defaults);
+    }
+    let uniform = reflected.material_uniform.as_ref().ok_or_else(|| {
+        format!("material default for stem `{stem}` has no reflected material uniform block")
+    })?;
+    let mut reflected_fields = HashMap::new();
+    for (field_name, field) in &uniform.fields {
+        reflected_fields.insert(
+            shader_writer_unescaped_property_name(field_name).to_string(),
+            (field_name.as_str(), field.kind),
+        );
+    }
+    for default in material_defaults {
+        let property = shader_writer_unescaped_property_name(default.property);
+        let (field_name, field_kind) =
+            reflected_fields.get(property).copied().ok_or_else(|| {
+                format!(
+                    "material default `{property}` for stem `{stem}` has no reflected uniform field"
+                )
+            })?;
+        validate_material_default_kind(stem, property, field_kind, default.value)?;
+        if let Some(previous) = defaults.insert(field_name.to_string(), default.value) {
+            return Err(format!(
+                "material default for stem `{stem}` field `{field_name}` was declared twice ({previous:?}, {:?})",
+                default.value
+            ));
+        }
+    }
+    Ok(defaults)
+}
+
+/// Validates that an embedded material default can be packed into a reflected field kind.
+fn validate_material_default_kind(
+    stem: &str,
+    property: &str,
+    field_kind: ReflectedUniformScalarKind,
+    value: EmbeddedMaterialDefaultValue,
+) -> Result<(), String> {
+    let matches = matches!(
+        (field_kind, value.kind),
+        (
+            ReflectedUniformScalarKind::F32,
+            EmbeddedMaterialDefaultKind::Float
+        ) | (
+            ReflectedUniformScalarKind::Vec4,
+            EmbeddedMaterialDefaultKind::Vec4
+        )
+    );
+    if matches {
+        Ok(())
+    } else {
+        Err(format!(
+            "material default `{property}` for stem `{stem}` has type {value:?}, but reflected uniform field kind is {field_kind:?}"
+        ))
+    }
+}
+
 /// Reflects embedded WGSL for `stem`, builds the `@group(1)` layout, and interns property ids.
 pub(crate) fn build_stem_material_layout(
     device: &wgpu::Device,
@@ -150,6 +219,7 @@ pub(crate) fn build_stem_material_layout(
         &reflected,
     ));
     let uniform_value_spaces = MaterialUniformValueSpaces::for_stem(stem, &reflected);
+    let uniform_default_by_field = material_default_uniform_fields_for_stem(stem, &reflected)?;
     let texture_default_by_binding = texture_default_bindings_for_stem(stem, &reflected)?;
 
     Ok(Arc::new(StemMaterialLayout {
@@ -157,6 +227,7 @@ pub(crate) fn build_stem_material_layout(
         reflected,
         ids,
         uniform_value_spaces,
+        uniform_default_by_field,
         texture_default_by_binding,
     }))
 }
@@ -166,8 +237,8 @@ mod tests {
     use hashbrown::HashSet;
 
     use super::{
-        StemEmbeddedPropertyIds, shader_writer_unescaped_property_name,
-        texture_default_bindings_for_stem,
+        StemEmbeddedPropertyIds, material_default_uniform_fields_for_stem,
+        shader_writer_unescaped_property_name, texture_default_bindings_for_stem,
     };
     use crate::embedded_shaders;
     use crate::materials::host_data::PropertyIdRegistry;
@@ -204,29 +275,66 @@ mod tests {
     }
 
     #[test]
-    fn xiexe_layout_drops_xstoon3_extension_bindings() {
-        let wgsl =
-            embedded_shaders::embedded_target_wgsl("xstoon2.0_default").expect("xiexe target WGSL");
-        let reflected = reflect_raster_material_wgsl(wgsl).expect("xiexe WGSL reflection");
-        let unmangled: Vec<String> = reflected
-            .material_group1_names
-            .values()
-            .map(|n| shader_writer_unescaped_property_name(n).to_string())
-            .collect();
-        for forbidden in [
-            "_BakedCubemap",
-            "_BakedCubemap_sampler",
-            "_DetailNormalMap",
-            "_DetailNormalMap_sampler",
-            "_DetailMask",
-            "_DetailMask_sampler",
-            "_SpecularMap",
-            "_SpecularMap_sampler",
-        ] {
-            assert!(
-                !unmangled.iter().any(|n| n == forbidden),
-                "xstoon 2.0 must not bind XSToon3 extension `{forbidden}`: {unmangled:?}"
-            );
+    fn xiexe_layout_drops_non_core_extension_bindings() {
+        for stem in embedded_shaders::COMPILED_MATERIAL_STEMS
+            .iter()
+            .copied()
+            .filter(|stem| stem.starts_with("xstoon2.0"))
+        {
+            let wgsl = embedded_shaders::embedded_target_wgsl(stem).expect("xiexe target WGSL");
+            let reflected = reflect_raster_material_wgsl(wgsl).expect("xiexe WGSL reflection");
+            let unmangled: Vec<String> = reflected
+                .material_group1_names
+                .values()
+                .map(|n| shader_writer_unescaped_property_name(n).to_string())
+                .collect();
+            let uniform = reflected
+                .material_uniform
+                .as_ref()
+                .expect("xiexe material uniform block");
+            for forbidden in [
+                "_BakedCubemap",
+                "_BakedCubemap_sampler",
+                "_DetailNormalMap",
+                "_DetailNormalMap_sampler",
+                "_DetailMask",
+                "_DetailMask_sampler",
+                "_SpecularMap",
+                "_SpecularMap_sampler",
+            ] {
+                assert!(
+                    !unmangled.iter().any(|n| n == forbidden),
+                    "{stem} must not bind non-core extension `{forbidden}`: {unmangled:?}"
+                );
+            }
+            for forbidden in [
+                "_DetailNormalMapScale",
+                "_ReflectionMode",
+                "_ClearCoat",
+                "_ReflectionBlendMode",
+                "_ClearcoatStrength",
+                "_ClearcoatSmoothness",
+                "_ScaleWithLight",
+                "_EmissionToDiffuse",
+                "_ScaleWithLightSensitivity",
+                "_SpecMode",
+                "_SpecularStyle",
+                "_AnisotropicAX",
+                "_AnisotropicAY",
+                "_HalftoneDotSize",
+                "_HalftoneDotAmount",
+                "_HalftoneLineAmount",
+                "_UVSetDetNormal",
+                "_UVSetDetMask",
+                "_UVSetSpecular",
+                "_AdvMode",
+                "_TilingMode",
+            ] {
+                assert!(
+                    !uniform.fields.contains_key(forbidden),
+                    "{stem} must not reflect non-core extension uniform `{forbidden}`"
+                );
+            }
         }
     }
 
@@ -256,6 +364,17 @@ mod tests {
             );
             texture_default_bindings_for_stem(stem, &reflected)
                 .expect("texture defaults map to reflected texture bindings");
+        }
+    }
+
+    #[test]
+    fn all_embedded_material_defaults_resolve_to_uniform_fields() {
+        for stem in embedded_shaders::COMPILED_MATERIAL_STEMS {
+            let wgsl = embedded_shaders::embedded_target_wgsl(stem).expect("embedded target WGSL");
+            let reflected = reflect_raster_material_wgsl(wgsl).expect("embedded reflection");
+
+            material_default_uniform_fields_for_stem(stem, &reflected)
+                .expect("material defaults map to reflected uniform fields");
         }
     }
 }

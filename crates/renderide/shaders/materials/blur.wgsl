@@ -7,6 +7,10 @@
 
 //#texture_default _SpreadTex white
 //#texture_default _NormalMap bump
+//#mat_default _DepthDivisor float 1.0
+//#mat_default _Iterations float 4.0
+//#mat_default _RefractionStrength float 0.01
+//#mat_default _Spread vec4 0.1 0.1 0.0 0.0
 
 #import renderide::post::filter_math as fm
 #import renderide::post::filter_vertex as fv
@@ -149,7 +153,7 @@ fn sample_blur(center_uv: vec2<f32>, spread: vec2<f32>, iterations: f32, view_la
     return c / clamped_iterations;
 }
 
-//#pass forward_filter
+//#pass type=forward name=forward_filter blend=material_filter
 @fragment
 fn fs_main(in: BlurVertexOutput) -> @location(0) vec4<f32> {
     fc::discard_rect_if_enabled(in.obj_xy, mat._Rect, kw_RECTCLIP());

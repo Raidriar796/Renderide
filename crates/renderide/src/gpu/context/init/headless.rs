@@ -14,6 +14,7 @@ use super::shared::{
     select_headless_adapter_with_fallback,
 };
 use crate::config::GraphicsApiSetting;
+use crate::diagnostics::gpu_flight_recorder::GpuFlightRecorder;
 use crate::gpu::submission_state::GpuSubmissionState;
 
 impl GpuContext {
@@ -61,12 +62,14 @@ impl GpuContext {
 
         let mapped_buffer_health = Arc::new(GpuMappedBufferHealth::new());
         let device_health = Arc::new(GpuDeviceHealth::new());
+        let flight_recorder = Arc::new(GpuFlightRecorder::new());
         let required_features = adapter_render_features_intersection(&adapter);
         let (device, queue) = request_device_for_adapter(
             &adapter,
             required_features,
             Arc::clone(&mapped_buffer_health),
             Arc::clone(&device_health),
+            Arc::clone(&flight_recorder),
         )
         .await?;
 
@@ -112,6 +115,7 @@ impl GpuContext {
             Arc::clone(&device),
             Arc::new(queue),
             Arc::clone(&mapped_buffer_health),
+            Arc::clone(&flight_recorder),
         )?;
         let submission = GpuSubmissionState::new(
             runtime.driver_thread,
@@ -130,6 +134,7 @@ impl GpuContext {
             gpu_queue_access_gate: runtime.gpu_queue_access_gate,
             mapped_buffer_health,
             device_health,
+            flight_recorder,
             surface: None,
             config,
             supported_present_modes: Vec::new(),

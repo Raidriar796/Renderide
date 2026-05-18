@@ -115,45 +115,72 @@ pub(in crate::scene::coordinator) fn extract_render_space_update(
     profiling::scope!("scene::extract_render_space");
     let space_id = RenderSpaceId(update.id);
     let cameras = match update.cameras_update.as_ref() {
-        Some(cu) => Some(extract_camera_renderables_update(shm, cu, update.id)?),
+        Some(cu) => {
+            profiling::scope!("scene::extract_render_space::cameras");
+            Some(extract_camera_renderables_update(shm, cu, update.id)?)
+        }
         None => None,
     };
     let reflection_probes = match update.reflection_probes_update.as_ref() {
-        Some(rpu) => Some(extract_reflection_probe_renderables_update(
-            shm, rpu, update.id,
-        )?),
+        Some(rpu) => {
+            profiling::scope!("scene::extract_render_space::reflection_probes");
+            Some(extract_reflection_probe_renderables_update(
+                shm, rpu, update.id,
+            )?)
+        }
         None => None,
     };
     let transforms = match update.transforms_update.as_ref() {
-        Some(tu) => Some(extract_transforms_update(shm, tu, frame_index, update.id)?),
+        Some(tu) => {
+            profiling::scope!("scene::extract_render_space::transforms");
+            Some(extract_transforms_update(shm, tu, frame_index, update.id)?)
+        }
         None => None,
     };
     let meshes = match update.mesh_renderers_update.as_ref() {
-        Some(mu) => Some(extract_mesh_renderables_update(shm, mu, update.id)?),
+        Some(mu) => {
+            profiling::scope!("scene::extract_render_space::meshes");
+            Some(extract_mesh_renderables_update(shm, mu, update.id)?)
+        }
         None => None,
     };
     let skinned_meshes = match update.skinned_mesh_renderers_update.as_ref() {
-        Some(su) => Some(extract_skinned_mesh_renderables_update(shm, su, update.id)?),
+        Some(su) => {
+            profiling::scope!("scene::extract_render_space::skinned_meshes");
+            Some(extract_skinned_mesh_renderables_update(shm, su, update.id)?)
+        }
         None => None,
     };
     let layers = match update.layers_update.as_ref() {
-        Some(lu) => Some(extract_layer_update(shm, lu, update.id)?),
+        Some(lu) => {
+            profiling::scope!("scene::extract_render_space::layers");
+            Some(extract_layer_update(shm, lu, update.id)?)
+        }
         None => None,
     };
     let transform_overrides = match update.render_transform_overrides_update.as_ref() {
-        Some(rtu) => Some(extract_render_transform_overrides_update(
-            shm, rtu, update.id,
-        )?),
+        Some(rtu) => {
+            profiling::scope!("scene::extract_render_space::transform_overrides");
+            Some(extract_render_transform_overrides_update(
+                shm, rtu, update.id,
+            )?)
+        }
         None => None,
     };
     let material_overrides = match update.render_material_overrides_update.as_ref() {
-        Some(rmu) => Some(extract_render_material_overrides_update(
-            shm, rmu, update.id,
-        )?),
+        Some(rmu) => {
+            profiling::scope!("scene::extract_render_space::material_overrides");
+            Some(extract_render_material_overrides_update(
+                shm, rmu, update.id,
+            )?)
+        }
         None => None,
     };
     let blit_to_displays = match update.blit_to_displays_update.as_ref() {
-        Some(btd) => Some(extract_blit_to_display_update(shm, btd, update.id)?),
+        Some(btd) => {
+            profiling::scope!("scene::extract_render_space::blit_to_displays");
+            Some(extract_blit_to_display_update(shm, btd, update.id)?)
+        }
         None => None,
     };
     Ok(ExtractedRenderSpaceUpdate {
@@ -205,6 +232,7 @@ pub(in crate::scene::coordinator) fn apply_extracted_render_space_update(
 
     let mut world_dirty = false;
     if let Some(ref tu) = extracted.transforms {
+        profiling::scope!("scene::apply_render_space_chunk::transforms");
         if apply_transforms_update_extracted(space, cache, extracted.space_id, tu, removal_events) {
             world_dirty = true;
         }
@@ -212,45 +240,68 @@ pub(in crate::scene::coordinator) fn apply_extracted_render_space_update(
         removal_events.clear();
     }
     let transform_removals: &[TransformRemovalEvent] = removal_events;
+    let has_transform_removals = !transform_removals.is_empty();
 
     // Roll pre-existing cameras' transform ids forward through this frame's swap-removes before
     // applying the extracted camera update (whose addition indices are post-swap from the host).
-    fixup_cameras_for_transform_removals(space, transform_removals);
+    if has_transform_removals {
+        profiling::scope!("scene::apply_render_space_chunk::fixup_cameras");
+        fixup_cameras_for_transform_removals(space, transform_removals);
+    }
     if let Some(ref cu) = extracted.cameras {
+        profiling::scope!("scene::apply_render_space_chunk::cameras");
         super::super::camera::apply_camera_renderables_update_extracted(space, cu);
     }
-    fixup_reflection_probes_for_transform_removals(space, transform_removals);
+    if has_transform_removals {
+        profiling::scope!("scene::apply_render_space_chunk::fixup_reflection_probes");
+        fixup_reflection_probes_for_transform_removals(space, transform_removals);
+    }
     if let Some(ref rpu) = extracted.reflection_probes {
+        profiling::scope!("scene::apply_render_space_chunk::reflection_probes");
         apply_reflection_probe_renderables_update_extracted(space, rpu);
     } else {
         space.pending_reflection_probe_render_changes.clear();
     }
 
-    fixup_static_meshes_for_transform_removals(space, transform_removals);
+    if has_transform_removals {
+        profiling::scope!("scene::apply_render_space_chunk::fixup_meshes");
+        fixup_static_meshes_for_transform_removals(space, transform_removals);
+    }
     if let Some(ref mu) = extracted.meshes {
+        profiling::scope!("scene::apply_render_space_chunk::meshes");
         apply_mesh_renderables_update_extracted(space, mu, scene_id);
     }
     if let Some(ref su) = extracted.skinned_meshes {
+        profiling::scope!("scene::apply_render_space_chunk::skinned_meshes");
         apply_skinned_mesh_renderables_update_extracted(space, su, transform_removals, scene_id);
     }
-    {
+    let mesh_membership_or_nodes_changed =
+        extracted.meshes.is_some() || extracted.skinned_meshes.is_some();
+    let layer_inputs_changed =
+        has_transform_removals || extracted.layers.is_some() || space.hierarchy_dirty;
+    if layer_inputs_changed || mesh_membership_or_nodes_changed || space.layer_index_dirty {
         profiling::scope!("scene::layers");
-        super::super::layer::fixup_layer_assignments_for_transform_removals(
-            space,
-            transform_removals,
-        );
+        if has_transform_removals {
+            super::super::layer::fixup_layer_assignments_for_transform_removals(
+                space,
+                transform_removals,
+            );
+        }
         if let Some(ref lu) = extracted.layers {
             apply_layer_update_extracted(space, lu);
         }
         super::super::layer::resolve_mesh_layers_from_assignments(space);
-    };
+    }
     if let Some(ref rtu) = extracted.transform_overrides {
+        profiling::scope!("scene::apply_render_space_chunk::transform_overrides");
         apply_render_transform_overrides_update_extracted(space, rtu, transform_removals);
     }
     if let Some(ref rmu) = extracted.material_overrides {
+        profiling::scope!("scene::apply_render_space_chunk::material_overrides");
         apply_render_material_overrides_update_extracted(space, rmu, transform_removals);
     }
     if let Some(ref btd) = extracted.blit_to_displays {
+        profiling::scope!("scene::apply_render_space_chunk::blit_to_displays");
         apply_blit_to_display_update_extracted(space, btd);
     }
     world_dirty

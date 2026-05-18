@@ -43,13 +43,17 @@ fn refresh_render_world_space(
     render_context: RenderingContext,
     id: RenderSpaceId,
 ) {
+    profiling::scope!("mesh::render_world::refresh_space");
     cached.draws.clear();
     if !cached.active {
         return;
     }
-    let estimate = estimated_draw_count(scene, id);
-    if estimate > cached.draws.capacity() {
-        cached.draws.reserve(estimate - cached.draws.capacity());
+    {
+        profiling::scope!("mesh::render_world::reserve_space_draws");
+        let estimate = estimated_draw_count(scene, id);
+        if estimate > cached.draws.capacity() {
+            cached.draws.reserve(estimate - cached.draws.capacity());
+        }
     }
     expand_space_into_aggressive(
         &mut cached.draws,
@@ -101,6 +105,7 @@ impl RenderWorld {
         mesh_pool: &MeshPool,
         render_context: RenderingContext,
     ) -> &FramePreparedRenderables {
+        profiling::scope!("mesh::render_world::prepare_for_frame");
         let mesh_pool_generation = mesh_pool.mutation_generation();
         let context_changed = self.prepared.render_context() != render_context;
         let mesh_pool_changed = self.mesh_pool_generation != mesh_pool_generation;
@@ -111,15 +116,18 @@ impl RenderWorld {
 
         let full_rebuild = self.full_rebuild_requested;
         if full_rebuild {
+            profiling::scope!("mesh::render_world::mark_all_dirty");
             self.mark_all_scene_spaces_dirty(scene);
         }
 
         let had_dirty = !self.dirty_spaces.is_empty();
         if had_dirty {
+            profiling::scope!("mesh::render_world::refresh_dirty_spaces");
             self.refresh_dirty_spaces(scene, mesh_pool, render_context);
         }
 
         if full_rebuild || had_dirty || context_changed || mesh_pool_changed {
+            profiling::scope!("mesh::render_world::rebuild_snapshot");
             self.rebuild_prepared_snapshot(scene, render_context);
         }
         self.full_rebuild_requested = false;
@@ -132,6 +140,7 @@ impl RenderWorld {
     }
 
     fn mark_all_scene_spaces_dirty(&mut self, scene: &SceneCoordinator) {
+        profiling::scope!("mesh::render_world::mark_all_scene_spaces_dirty");
         self.spaces.retain(|id, _| scene.space(*id).is_some());
         for id in scene.render_space_ids() {
             self.dirty_spaces.insert(id);
@@ -144,19 +153,24 @@ impl RenderWorld {
         mesh_pool: &MeshPool,
         render_context: RenderingContext,
     ) {
+        profiling::scope!("mesh::render_world::refresh_dirty_spaces_inner");
         let mut dirty_spaces = std::mem::take(&mut self.dirty_spaces);
         let mut work = Vec::with_capacity(dirty_spaces.len());
-        for id in dirty_spaces.drain() {
-            let Some(space) = scene.space(id) else {
-                self.spaces.remove(&id);
-                continue;
-            };
-            let mut cached = self.spaces.remove(&id).unwrap_or_default();
-            cached.active = space.is_active();
-            work.push(DirtyRenderWorldSpace { id, cached });
+        {
+            profiling::scope!("mesh::render_world::collect_dirty_spaces");
+            for id in dirty_spaces.drain() {
+                let Some(space) = scene.space(id) else {
+                    self.spaces.remove(&id);
+                    continue;
+                };
+                let mut cached = self.spaces.remove(&id).unwrap_or_default();
+                cached.active = space.is_active();
+                work.push(DirtyRenderWorldSpace { id, cached });
+            }
         }
 
         if work.len() < 2 {
+            profiling::scope!("mesh::render_world::refresh_dirty_serial");
             for mut slot in work.drain(..) {
                 refresh_render_world_space(
                     &mut slot.cached,
@@ -168,18 +182,24 @@ impl RenderWorld {
                 self.spaces.insert(slot.id, slot.cached);
             }
         } else {
-            work.par_iter_mut().for_each(|slot| {
-                profiling::scope!("mesh::render_world::dirty_space_worker");
-                refresh_render_world_space(
-                    &mut slot.cached,
-                    scene,
-                    mesh_pool,
-                    render_context,
-                    slot.id,
-                );
-            });
-            for slot in work.drain(..) {
-                self.spaces.insert(slot.id, slot.cached);
+            {
+                profiling::scope!("mesh::render_world::refresh_dirty_parallel");
+                work.par_iter_mut().for_each(|slot| {
+                    profiling::scope!("mesh::render_world::dirty_space_worker");
+                    refresh_render_world_space(
+                        &mut slot.cached,
+                        scene,
+                        mesh_pool,
+                        render_context,
+                        slot.id,
+                    );
+                });
+            }
+            {
+                profiling::scope!("mesh::render_world::reinsert_dirty_spaces");
+                for slot in work.drain(..) {
+                    self.spaces.insert(slot.id, slot.cached);
+                }
             }
         }
         self.dirty_spaces = dirty_spaces;
@@ -190,6 +210,7 @@ impl RenderWorld {
         scene: &SceneCoordinator,
         render_context: RenderingContext,
     ) {
+        profiling::scope!("mesh::render_world::rebuild_prepared_snapshot");
         self.prepared.rebuild_from_cached_spaces(
             render_context,
             scene.render_space_ids().filter_map(|id| {

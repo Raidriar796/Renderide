@@ -1,5 +1,13 @@
 //! Fog box volume (`Shader "Volume/FogBox"`).
 
+//#mat_default _AccumulationColor vec4 0.1 0.1 0.1 0.1
+//#mat_default _AccumulationColorBottom vec4 0.1 0.1 0.0 0.1
+//#mat_default _AccumulationColorTop vec4 0.1 0.1 0.1 0.1
+//#mat_default _AccumulationRate float 0.1
+//#mat_default _GammaCurve float 2.2
+//#mat_default _FogEnd float 1e+07
+//#mat_default _FogDensity float 0.1
+
 #import renderide::draw::per_draw as pd
 #import renderide::draw::types as dt
 #import renderide::frame::globals as rg
@@ -145,7 +153,7 @@ fn vs_main(
     return out;
 }
 
-//#pass volume_front
+//#pass type=forward name=volume_front blend=material_overlay zwrite=off ztest=always cull=front color_mask=rgba offset=0,0
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let draw = pd::get_draw(rg::draw_index_from_layer(in.view_layer));
@@ -188,6 +196,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let dist = accumulation_distance(raw_distance);
     let acc_base = max(dist * mat._AccumulationRate, 0.0);
     let acc = pow(acc_base, max(mat._GammaCurve, vol::VOLUME_EPSILON)) * acc_color;
-    let result = apply_saturation(mat._BaseColor + acc);
+    let result = vol::clamp_volume_source_rgb(apply_saturation(mat._BaseColor + acc));
     return rg::retain_globals_additive(result);
 }

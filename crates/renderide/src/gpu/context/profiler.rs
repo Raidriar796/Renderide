@@ -53,6 +53,15 @@ impl GpuContext {
         self.submission.gpu_profiler.as_mut()
     }
 
+    /// Shared reference to the GPU profiler, when one is active.
+    ///
+    /// Use this for helpers that only need to reserve pass-level timestamp queries and already
+    /// receive an immutable [`GpuContext`] borrow. Query resolution still happens through the
+    /// mutable frame-end paths.
+    pub fn gpu_profiler(&self) -> Option<&crate::profiling::GpuProfilerHandle> {
+        self.submission.gpu_profiler.as_ref()
+    }
+
     /// Temporarily removes the GPU profiler handle from [`GpuContext`] and returns it.
     ///
     /// Use this when code must hold a borrowed reference into `GpuContext` (e.g. a

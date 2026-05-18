@@ -8,6 +8,9 @@
 //! shader-specific keyword bits locally (Unity `CLIP` selects clip-range rescaling,
 //! `RECTCLIP` discards fragments outside `_Rect` in object XY).
 
+//#mat_default _ClipMax float 1.0
+//#mat_default _Multiply float 1.0
+
 #import renderide::post::filter_vertex as fv
 #import renderide::post::filter_common as fc
 #import renderide::frame::scene_depth_sample as sds
@@ -59,7 +62,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward_filter
+//#pass type=forward name=forward_filter blend=material_filter
 @fragment
 fn fs_main(vout: fv::RectVertexOutput) -> @location(0) vec4<f32> {
     fc::discard_rect_if_enabled(vout.obj_xy, mat._Rect, kw_RECTCLIP());

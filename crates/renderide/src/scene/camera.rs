@@ -5,7 +5,7 @@ use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{CAMERA_STATE_HOST_ROW_BYTES, CameraRenderablesUpdate, CameraState};
 
 use super::dense_update::{
-    push_dense_additions, retain_live_transform_ids, swap_remove_dense_indices,
+    push_dense_additions, retain_live_transform_ids, swap_remove_dense_indices_with_update,
 };
 use super::error::SceneError;
 use super::render_space::RenderSpaceState;
@@ -86,6 +86,20 @@ pub(crate) fn extract_camera_renderables_update(
     Ok(out)
 }
 
+fn update_moved_camera_renderable(camera: &mut CameraRenderableEntry, index: i32) {
+    camera.renderable_index = index;
+}
+
+fn build_added_camera_renderable(id: i32, renderable_index: i32) -> CameraRenderableEntry {
+    CameraRenderableEntry {
+        renderable_index,
+        transform_id: id,
+        state: CameraState::default(),
+        selective_transform_ids: Vec::new(),
+        exclude_transform_ids: Vec::new(),
+    }
+}
+
 /// Mutates [`RenderSpaceState`] using a pre-extracted [`ExtractedCameraRenderablesUpdate`].
 ///
 /// Single-threaded for one space; safe to call concurrently across distinct spaces.
@@ -94,16 +108,16 @@ pub(crate) fn apply_camera_renderables_update_extracted(
     extracted: &ExtractedCameraRenderablesUpdate,
 ) {
     profiling::scope!("scene::apply_cameras");
-    swap_remove_dense_indices(&mut space.cameras, &extracted.removals);
-    push_dense_additions(&mut space.cameras, &extracted.additions, |node_id| {
-        CameraRenderableEntry {
-            renderable_index: -1,
-            transform_id: node_id,
-            state: CameraState::default(),
-            selective_transform_ids: Vec::new(),
-            exclude_transform_ids: Vec::new(),
-        }
-    });
+    swap_remove_dense_indices_with_update(
+        &mut space.cameras,
+        &extracted.removals,
+        update_moved_camera_renderable,
+    );
+    push_dense_additions(
+        &mut space.cameras,
+        &extracted.additions,
+        &build_added_camera_renderable,
+    );
     let transform_ids = extracted.transform_ids.as_deref();
     let mut tid_cursor = 0usize;
     for state in &extracted.states {

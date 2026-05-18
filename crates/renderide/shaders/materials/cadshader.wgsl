@@ -2,8 +2,12 @@
 //!
 //! Pass 1 (`outline`, cull-front): expand vertex along normal by `_OutlineWidth`, output
 //! `_OutlineColor`. Pass 2 (`forward_base`): standard cull-back emissive `_Color` output. Mirrors
-//! the `xstoon2.0-outlined.wgsl` pass structure (`PassKind::Outline` + `PassKind::ForwardBase`).
+//! the `xstoon2.0-outlined.wgsl` outline-plus-forward pass structure.
 
+
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _OutlineColor vec4 0.0 0.0 0.0 1.0
+//#mat_default _OutlineWidth float 0.1
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
@@ -65,13 +69,13 @@ fn vs_outline(
     return out;
 }
 
-//#pass outline vs=vs_outline
+//#pass type=forward name=outline blend=off cull=front vs=vs_outline
 @fragment
 fn fs_outline() -> @location(0) vec4<f32> {
     return rg::retain_globals_additive(vec4<f32>(mat._OutlineColor.rgb, 0.0));
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
     return rg::retain_globals_additive(vec4<f32>(mat._Color.rgb, 1.0));

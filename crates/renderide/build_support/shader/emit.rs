@@ -4,7 +4,8 @@ use std::fs;
 use std::path::Path;
 
 use super::directives::{
-    BuildPassDirective, TextureDefaultDirective, pass_literal, texture_default_literal,
+    BuildPassDirective, MaterialDefaultDirective, TextureDefaultDirective,
+    material_default_literal, pass_literal, texture_default_literal,
 };
 use super::error::BuildError;
 use super::model::{CompiledShader, ShaderSourceClass};
@@ -26,6 +27,7 @@ pub(super) struct ComposedShaders {
     embedded_macro_arms: String,
     embedded_pass_arms: String,
     embedded_texture_default_arms: String,
+    embedded_material_default_arms: String,
 }
 
 impl ComposedShaders {
@@ -41,6 +43,7 @@ impl ComposedShaders {
             embedded_macro_arms: String::new(),
             embedded_pass_arms: String::new(),
             embedded_texture_default_arms: String::new(),
+            embedded_material_default_arms: String::new(),
         }
     }
 
@@ -52,6 +55,7 @@ impl ComposedShaders {
                 &target.wgsl,
                 &target.pass_directives,
                 &compiled.texture_defaults,
+                &compiled.material_defaults,
             );
             self.push_stem(compiled.source_class, target.target_stem.clone());
         }
@@ -75,6 +79,7 @@ impl ComposedShaders {
         wgsl: &str,
         pass_directives: &[BuildPassDirective],
         texture_defaults: &[TextureDefaultDirective],
+        material_defaults: &[MaterialDefaultDirective],
     ) {
         use std::fmt::Write as _;
 
@@ -106,6 +111,17 @@ impl ComposedShaders {
                 .join(",\n            ");
             let _ = writeln!(
                 self.embedded_texture_default_arms,
+                "        \"{target_stem}\" => const {{ &[\n            {default_literals},\n        ] }},"
+            );
+        }
+        if !material_defaults.is_empty() {
+            let default_literals = material_defaults
+                .iter()
+                .map(material_default_literal)
+                .collect::<Vec<_>>()
+                .join(",\n            ");
+            let _ = writeln!(
+                self.embedded_material_default_arms,
                 "        \"{target_stem}\" => const {{ &[\n            {default_literals},\n        ] }},"
             );
         }
@@ -146,6 +162,55 @@ pub(super) fn emit_compiled_shader(
     write_compiled_shader_targets(compiled, target_dir)?;
     out.record_compiled_shader(compiled);
     Ok(())
+}
+
+/// Generated Rust definitions for material uniform defaults.
+fn embedded_material_default_type_defs() -> &'static str {
+    r#"/// Material uniform fallback value kind parsed from `//#mat_default` directives.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EmbeddedMaterialDefaultKind {
+    /// Unity float property default.
+    Float,
+    /// Unity vector/color property default.
+    Vec4,
+}
+
+/// Material uniform fallback value parsed from `//#mat_default` directives.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EmbeddedMaterialDefaultValue {
+    /// Unity material property default kind.
+    pub kind: EmbeddedMaterialDefaultKind,
+    /// Unity material property default values. Float defaults use only the first element.
+    pub values: [f32; 4],
+}
+
+impl EmbeddedMaterialDefaultValue {
+    /// Creates a float material default.
+    pub const fn float(value: f32) -> Self {
+        Self {
+            kind: EmbeddedMaterialDefaultKind::Float,
+            values: [value, 0.0, 0.0, 0.0],
+        }
+    }
+
+    /// Creates a vec4 material default.
+    pub const fn vec4(values: [f32; 4]) -> Self {
+        Self {
+            kind: EmbeddedMaterialDefaultKind::Vec4,
+            values,
+        }
+    }
+}
+
+/// One reflected material uniform property and its Unity fallback value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EmbeddedMaterialDefault {
+    /// Reflected host material uniform property name.
+    pub property: &'static str,
+    /// Unity fallback value for the uniform property.
+    pub value: EmbeddedMaterialDefaultValue,
+}
+"#
 }
 
 /// Renders generated `embedded_shaders.rs`.
@@ -206,6 +271,8 @@ pub struct EmbeddedTextureDefault {{
     pub kind: EmbeddedTextureDefaultKind,
 }}
 
+{material_default_type_defs}
+
 /// Flattened WGSL for `stem` (also written under `shaders/target/{{stem}}.wgsl` at build time).
 #[expect(clippy::too_many_lines, reason = "match arm per embedded shader target; scales with shader count")]
 pub fn embedded_target_wgsl(stem: &str) -> Option<&'static str> {{
@@ -230,6 +297,14 @@ pub fn embedded_target_texture_defaults(stem: &str) -> &'static [EmbeddedTexture
     }}
 }}
 
+/// Declared material uniform fallbacks for `stem`, parsed from `//#mat_default` directives in the source WGSL.
+#[expect(clippy::too_many_lines, reason = "match arm per embedded shader target; scales with shader count")]
+pub fn embedded_target_material_defaults(stem: &str) -> &'static [EmbeddedMaterialDefault] {{
+    match stem {{
+{embedded_material_default_arms}        _ => &[],
+    }}
+}}
+
 /// Material target stems (composed from `shaders/materials/*.wgsl`).
 #[cfg(test)]
 pub const COMPILED_MATERIAL_STEMS: &[&str] = &[
@@ -240,6 +315,8 @@ pub const COMPILED_MATERIAL_STEMS: &[&str] = &[
         embedded_macro_arms = c.embedded_macro_arms,
         embedded_pass_arms = c.embedded_pass_arms,
         embedded_texture_default_arms = c.embedded_texture_default_arms,
+        embedded_material_default_arms = c.embedded_material_default_arms,
+        material_default_type_defs = embedded_material_default_type_defs(),
         material_stems = stems_list(&c.material_stems),
     )
 }
@@ -247,7 +324,9 @@ pub const COMPILED_MATERIAL_STEMS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use crate::shader::directives::{
-        BuildDepthCompareDomain, BuildPassDirective, BuildPassKind, TextureDefaultDirective,
+        BuildBlend, BuildColorWrites, BuildCullMode, BuildDepthCompare, BuildDepthCompareDomain,
+        BuildMaterialPassState, BuildPassDirective, BuildPassType, BuildRenderStatePolicy,
+        MaterialDefaultDirective, MaterialDefaultValue, TextureDefaultDirective,
         TextureDefaultKind,
     };
     use crate::shader::model::{CompiledShader, CompiledShaderTarget, ShaderSourceClass};
@@ -265,6 +344,7 @@ mod tests {
             &[("single", "single wgsl")],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         );
         let dual = fake_compiled_shader(
             1,
@@ -273,6 +353,7 @@ mod tests {
                 ("dual_default", "default wgsl"),
                 ("dual_multiview", "multiview wgsl"),
             ],
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         );
@@ -299,22 +380,45 @@ mod tests {
             &[("outline_default", "wgsl body")],
             vec![
                 BuildPassDirective {
-                    kind: BuildPassKind::Forward,
+                    pass_type: BuildPassType::Forward,
+                    name: "forward".to_string(),
                     fragment_entry: "fs_main".to_string(),
                     vertex_entry: "vs_main".to_string(),
                     alpha_to_coverage: true,
                     depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
+                    depth_compare: BuildDepthCompare::Main,
+                    depth_write: true,
+                    cull_mode: BuildCullMode::Back,
+                    blend: BuildBlend::Off,
+                    write_mask: BuildColorWrites::Rgb,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
+                    material_state: BuildMaterialPassState::Forward,
+                    render_state_policy: BuildRenderStatePolicy::ALL_MATERIAL,
                 },
                 BuildPassDirective {
-                    kind: BuildPassKind::Outline,
+                    pass_type: BuildPassType::Forward,
+                    name: "outline".to_string(),
                     fragment_entry: "fs_outline".to_string(),
                     vertex_entry: "vs_outline".to_string(),
                     alpha_to_coverage: false,
                     depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
+                    depth_compare: BuildDepthCompare::Main,
+                    depth_write: true,
+                    cull_mode: BuildCullMode::Front,
+                    blend: BuildBlend::Off,
+                    write_mask: BuildColorWrites::Rgb,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
+                    material_state: BuildMaterialPassState::Static,
+                    render_state_policy: BuildRenderStatePolicy {
+                        color_mask: true,
+                        depth_write: true,
+                        depth_compare: true,
+                        cull: false,
+                        stencil: true,
+                        depth_offset: true,
+                    },
                 },
             ],
             vec![
@@ -327,24 +431,30 @@ mod tests {
                     kind: TextureDefaultKind::Black,
                 },
             ],
+            vec![MaterialDefaultDirective {
+                property: "_GlossMapScale".to_string(),
+                value: MaterialDefaultValue::float_bits(1.0f32.to_bits()),
+            }],
         );
 
         emit_compiled_shader(&compiled, target_dir.path(), &mut composed)?;
         let embedded = render_embedded_shaders_rs(&composed);
 
-        assert!(
-            embedded.contains("pass_from_kind(crate::materials::PassKind::Forward, \"fs_main\")")
-        );
+        assert!(embedded.contains("pass_type: crate::materials::PassType::Forward"));
         assert!(embedded.contains("alpha_to_coverage: true"));
         assert!(embedded.contains(
-            "MaterialPassDesc { vertex_entry: \"vs_outline\", ..crate::materials::pass_from_kind(crate::materials::PassKind::Outline, \"fs_outline\") }"
+            "name: \"outline\", pass_type: crate::materials::PassType::Forward, vertex_entry: \"vs_outline\", fragment_entry: \"fs_outline\""
         ));
         assert!(embedded.contains("COMPILED_MATERIAL_STEMS"));
         assert!(embedded.contains("EmbeddedTextureDefaultKind"));
         assert!(embedded.contains(
             "EmbeddedTextureDefault { property: \"_MainTex\", kind: EmbeddedTextureDefaultKind::White }"
         ));
+        assert!(embedded.contains(
+            "EmbeddedMaterialDefault { property: \"_GlossMapScale\", value: EmbeddedMaterialDefaultValue::float(f32::from_bits(0x3f80_0000)) }"
+        ));
         assert!(embedded.contains("embedded_target_texture_defaults"));
+        assert!(embedded.contains("embedded_target_material_defaults"));
         assert!(embedded.contains("macro_rules! embedded_wgsl"));
         assert!(embedded.contains("\"outline_default\" => \"wgsl body\","));
         assert!(!embedded.contains("pub const OUTLINE_DEFAULT_WGSL"));
@@ -371,6 +481,7 @@ mod tests {
         targets: &[(&str, &str)],
         pass_directives: Vec<BuildPassDirective>,
         texture_defaults: Vec<TextureDefaultDirective>,
+        material_defaults: Vec<MaterialDefaultDirective>,
     ) -> CompiledShader {
         let target_pass_directives = pass_directives.clone();
         CompiledShader {
@@ -378,6 +489,7 @@ mod tests {
             source_class,
             pass_directives,
             texture_defaults,
+            material_defaults,
             targets: targets
                 .iter()
                 .map(|(target_stem, wgsl)| CompiledShaderTarget {

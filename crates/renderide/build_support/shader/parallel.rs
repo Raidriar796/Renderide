@@ -257,6 +257,7 @@ mod tests {
             source_class,
             pass_directives: Vec::new(),
             texture_defaults: Vec::new(),
+            material_defaults: Vec::new(),
             targets: vec![CompiledShaderTarget {
                 target_stem: target_stem.to_string(),
                 wgsl: "wgsl".to_string(),

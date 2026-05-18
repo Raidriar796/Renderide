@@ -45,6 +45,10 @@ fn safe_divisor(v: f32) -> f32 {
     return v;
 }
 
+fn clamp_volume_source_rgb(color: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(clamp(color.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), color.a);
+}
+
 fn inside_unit_cube(pos: vec3<f32>) -> bool {
     return all(abs(pos) <= vec3<f32>(UNIT_BOX_HALF_EXTENT));
 }

@@ -378,7 +378,7 @@ fn world_mesh_hud_outputs(
 
 #[cfg(test)]
 mod tests {
-    use super::super::material_batch::PipelineVariantKey;
+    use super::super::material_batch::{MaterialGroup1Binding, PipelineVariantKey};
     use super::*;
     use crate::materials::{MaterialPipelineDesc, RasterPrimitiveTopology, ShaderPermutation};
     use crate::world_mesh::DrawGroup;
@@ -410,8 +410,8 @@ mod tests {
                 },
                 ShaderPermutation(0),
             ),
-            bind_group: None,
-            material_uniform_dynamic_offset: None,
+            resolved_pipeline_kind: None,
+            group1_binding: MaterialGroup1Binding::Empty,
             pipelines: None,
         }
     }

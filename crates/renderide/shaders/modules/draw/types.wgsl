@@ -28,19 +28,28 @@ fn position_stream_is_world_space(draw: PerDrawUniforms) -> bool {
     return draw._pad.x > 0.5 * POSITION_STREAM_WORLD_SPACE_FLAG;
 }
 
-/// Reflection probe atlas indices packed into the per-draw metadata.
-fn reflection_probe_indices(draw: PerDrawUniforms) -> vec2<u32> {
+/// Bit mask indicating, for each local probe,
+/// if it is of lower importance than its predecessor
+fn reflection_probe_importance_mask(draw: PerDrawUniforms) -> u32 {
     let packed = bitcast<u32>(draw._pad.y);
-    return vec2<u32>(packed & 0xFFFFu, packed >> 16u);
+    return packed & 0xFFFFu;
 }
 
-/// Blend weight for the second reflection probe hit.
-fn reflection_probe_second_weight(draw: PerDrawUniforms) -> f32 {
-    return clamp(draw._pad.z, 0.0, 1.0);
+/// Fallback reflection probe atlas index packed into the per-draw metadata.
+fn fallback_reflection_probe_index(draw: PerDrawUniforms) -> u32 {
+    let packed = bitcast<u32>(draw._pad.y);
+    return packed >> 16u;
 }
 
-/// Number of local reflection probe hits represented in the per-draw metadata.
-/// A single local hit may still carry a render-space fallback in the second atlas index.
-fn reflection_probe_hit_count(draw: PerDrawUniforms) -> u32 {
-    return min(u32(draw._pad.w + 0.5), 2u);
+/// Reflection probe atlas indices packed into the per-draw metadata.
+fn local_reflection_probe_indices(draw: PerDrawUniforms) -> vec4<u32> {
+    let packed_z = bitcast<u32>(draw._pad.z);
+    let packed_w = bitcast<u32>(draw._pad.w);
+    return vec4<u32>(packed_z & 0xFFFFu, packed_z >> 16u, packed_w & 0xFFFFu, packed_w >> 16u);
+}
+
+/// Returns whether any fallback or local reflection probe is selected.
+fn has_reflection_probe_selection(draw: PerDrawUniforms) -> bool {
+    let locals = local_reflection_probe_indices(draw);
+    return fallback_reflection_probe_index(draw) != 0u || any(locals != vec4<u32>(0u));
 }

@@ -234,6 +234,7 @@ pub(super) fn compile_shader_job(
         source_class: job.source_class,
         pass_directives,
         texture_defaults: compile_source.texture_defaults,
+        material_defaults: compile_source.material_defaults,
         targets,
     })
 }

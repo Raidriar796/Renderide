@@ -8,7 +8,22 @@ use super::cache::{
 use super::pipeline_kind::RasterPipelineKind;
 use super::raster_pipeline::MaterialPipelineDesc;
 use super::router::MaterialRouter;
-use super::router::resolve_raster_pipeline;
+
+/// Pipeline set paired with the concrete raster kind that produced it.
+#[derive(Clone)]
+pub(crate) struct MaterialPipelineResolution {
+    /// Raster pipeline kind whose layout matches [`Self::pipelines`].
+    pub(crate) kind: RasterPipelineKind,
+    /// Pipeline set for the resolved raster kind.
+    pub(crate) pipelines: MaterialPipelineSet,
+}
+
+impl MaterialPipelineResolution {
+    /// Builds a resolved pipeline value from a concrete kind and ready pipeline set.
+    fn new(kind: RasterPipelineKind, pipelines: MaterialPipelineSet) -> Self {
+        Self { kind, pipelines }
+    }
+}
 
 /// Full cache lookup request for one material pipeline variant.
 struct PipelineLookupRequest<'a> {
@@ -34,7 +49,7 @@ impl MaterialRegistry {
     fn try_pipeline_with_fallback(
         &self,
         request: PipelineLookupRequest<'_>,
-    ) -> Option<MaterialPipelineSet> {
+    ) -> Option<MaterialPipelineResolution> {
         let PipelineLookupRequest {
             shader_asset_id,
             kind,
@@ -42,7 +57,9 @@ impl MaterialRegistry {
             variant,
         } = request;
         match self.cache.get_or_queue(kind, desc, variant) {
-            MaterialPipelineLookup::Ready(p) => Some(p),
+            MaterialPipelineLookup::Ready(p) => {
+                Some(MaterialPipelineResolution::new(kind.clone(), p))
+            }
             MaterialPipelineLookup::Pending if matches!(kind, RasterPipelineKind::Null) => None,
             MaterialPipelineLookup::Pending => self.null_pipeline_fallback(desc, variant),
             MaterialPipelineLookup::Failed(err) if matches!(kind, RasterPipelineKind::Null) => {
@@ -78,16 +95,25 @@ impl MaterialRegistry {
         &self,
         desc: &MaterialPipelineDesc,
         variant: MaterialPipelineVariantSpec,
-    ) -> Option<MaterialPipelineSet> {
+    ) -> Option<MaterialPipelineResolution> {
         let fallback = RasterPipelineKind::Null;
         match self.cache.get_or_queue(&fallback, desc, variant) {
-            MaterialPipelineLookup::Ready(p) => Some(p),
+            MaterialPipelineLookup::Ready(p) => Some(MaterialPipelineResolution::new(fallback, p)),
             MaterialPipelineLookup::Pending => None,
             MaterialPipelineLookup::Failed(e) => {
                 logger::error!("fallback Null pipeline build failed: {e}");
                 None
             }
         }
+    }
+
+    /// Resolves the Null fallback pipeline for a caller that must abandon a routed embedded draw.
+    pub(crate) fn null_pipeline_for_variant(
+        &self,
+        desc: &MaterialPipelineDesc,
+        variant: MaterialPipelineVariantSpec,
+    ) -> Option<MaterialPipelineResolution> {
+        self.null_pipeline_fallback(desc, variant)
     }
 
     /// Builds a registry whose router falls back to [`RasterPipelineKind::Null`] for unknown shader assets.
@@ -130,17 +156,17 @@ impl MaterialRegistry {
         self.router.remove_shader_route(shader_asset_id);
     }
 
-    /// Resolves a cached or new pipeline for a host shader asset (via router + embedded stem when applicable).
-    pub fn pipeline_for_shader_asset(
+    /// Resolves a cached or new pipeline for an already-resolved raster pipeline kind.
+    pub(crate) fn pipeline_for_resolved_kind(
         &self,
         shader_asset_id: i32,
+        kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
         variant: MaterialPipelineVariantSpec,
-    ) -> Option<MaterialPipelineSet> {
-        let kind = resolve_raster_pipeline(shader_asset_id, &self.router);
+    ) -> Option<MaterialPipelineResolution> {
         self.try_pipeline_with_fallback(PipelineLookupRequest {
             shader_asset_id: Some(shader_asset_id),
-            kind: &kind,
+            kind,
             desc,
             variant,
         })

@@ -417,6 +417,15 @@ mod tests {
         assert_eq!(effect.id(), PostProcessEffectId::AutoExposure);
         assert!(effect.is_enabled(&PostProcessingSettings::default()));
 
+        let enabled = PostProcessingSettings {
+            auto_exposure: crate::config::AutoExposureSettings {
+                enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(effect.is_enabled(&enabled));
+
         let master_disabled = PostProcessingSettings {
             enabled: false,
             ..Default::default()

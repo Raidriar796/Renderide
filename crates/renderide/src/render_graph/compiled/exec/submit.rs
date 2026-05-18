@@ -21,8 +21,11 @@ pub(super) fn release_transients_and_gc(
     transient_by_key: HashMap<GraphResolveKey, GraphResolvedResources>,
 ) {
     let pool = mv_ctx.backend.transient_pool_mut();
-    for (_, resources) in transient_by_key {
-        resources.release_to_pool(pool);
+    {
+        profiling::scope!("render::transient_release");
+        for (_, resources) in transient_by_key {
+            resources.release_to_pool(pool);
+        }
     }
     profiling::scope!("render::transient_gc");
     pool.gc_tick(120);
@@ -35,6 +38,7 @@ fn drain_upload_command_buffer(
     queue: &wgpu::Queue,
     max_buffer_size: u64,
     avoid_mapped_staging: bool,
+    profiler: Option<&mut crate::profiling::GpuProfilerHandle>,
 ) -> DrainedUploadCommand {
     profiling::scope!("gpu::drain_upload_batch");
     let upload_drain_start = Instant::now();
@@ -44,11 +48,12 @@ fn drain_upload_command_buffer(
         max_buffer_size,
         upload_arena,
         avoid_mapped_staging,
+        profiler,
     );
     let drain_ms = elapsed_ms(upload_drain_start);
     if let Some(flush) = upload_flush {
         DrainedUploadCommand {
-            command_buffer: Some(flush.command_buffer),
+            command_buffer: flush.command_buffer,
             on_submitted_work_done: flush.on_submitted_work_done,
             stats: flush.stats,
             drain_ms,
@@ -106,27 +111,37 @@ fn drain_upload_for_submit(
     queue_ref: &wgpu::Queue,
 ) -> DrainedUploadCommand {
     let mut avoid_mapped_staging = mv_ctx.gpu.avoid_mapped_buffers_this_frame();
-    if avoid_mapped_staging {
-        mv_ctx.backend.upload_arena_mut().reset();
-    } else {
-        mv_ctx.backend.upload_arena_mut().maintain(mv_ctx.device);
-        if mv_ctx.gpu.observe_mapped_buffer_invalidation_during_frame() {
-            logger::warn!(
-                "frame upload drain observed mapped-buffer invalidation; using queue fallback"
-            );
+    {
+        profiling::scope!("gpu::drain_upload_batch::arena_maintenance");
+        if avoid_mapped_staging {
             mv_ctx.backend.upload_arena_mut().reset();
-            avoid_mapped_staging = true;
+        } else {
+            mv_ctx.backend.upload_arena_mut().maintain(mv_ctx.device);
+            if mv_ctx.gpu.observe_mapped_buffer_invalidation_during_frame() {
+                logger::warn!(
+                    "frame upload drain observed mapped-buffer invalidation; using queue fallback"
+                );
+                mv_ctx.backend.upload_arena_mut().reset();
+                avoid_mapped_staging = true;
+            }
         }
     }
-    let upload_arena = mv_ctx.backend.upload_arena_mut();
-    drain_upload_command_buffer(
-        upload_batch,
-        upload_arena,
-        mv_ctx.device,
-        queue_ref,
-        mv_ctx.gpu_limits.max_buffer_size(),
-        avoid_mapped_staging,
-    )
+    let max_buffer_size = mv_ctx.gpu_limits.max_buffer_size();
+    let mut profiler = mv_ctx.gpu.take_gpu_profiler();
+    let drained = {
+        let upload_arena = mv_ctx.backend.upload_arena_mut();
+        drain_upload_command_buffer(
+            upload_batch,
+            upload_arena,
+            mv_ctx.device,
+            queue_ref,
+            max_buffer_size,
+            avoid_mapped_staging,
+            profiler.as_mut(),
+        )
+    };
+    mv_ctx.gpu.restore_gpu_profiler(profiler);
+    drained
 }
 
 fn collect_submit_callbacks(
@@ -248,6 +263,7 @@ impl CompiledRenderGraph {
             command_batch_assembly_ms,
             submit_enqueue_ms,
             command_buffer_count,
+            target_is_swapchain,
             upload_stats: upload.stats,
         };
         {
@@ -304,6 +320,7 @@ fn encode_swapchain_hud_overlay(
         &mut hud_encoder,
         bb,
         viewport_px,
+        mv_ctx.gpu.gpu_profiler(),
     ) {
         logger::warn!("debug HUD overlay: {e}");
     }

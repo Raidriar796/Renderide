@@ -65,12 +65,16 @@ impl MaterialUniformValueSpaces {
 fn srgb_vec4_uniform_field(field_name: &str) -> bool {
     matches!(
         field_name,
-        "_BackgroundColor"
+        "_AccumulationColor"
+            | "_AccumulationColorBottom"
+            | "_AccumulationColorTop"
+            | "_BackgroundColor"
             | "_BaseColor"
             | "_BehindColor"
             | "_BehindFarColor"
             | "_BehindNearColor"
             | "_Blend"
+            | "_BonusAmbient"
             | "_Color"
             | "_Color0"
             | "_Color1"
@@ -109,6 +113,7 @@ fn srgb_vec4_uniform_field(field_name: &str) -> bool {
             | "_OutisdeColor"
             | "_OutsideColor"
             | "_OverlayTint"
+            | "_ReflColor"
             | "_RimColor"
             | "_SSColor"
             | "_SecondaryEmissionColor"
@@ -129,14 +134,17 @@ fn srgb_vec4_uniform_field(field_name: &str) -> bool {
 }
 
 fn srgb_vec4_array_uniform_field(stem: &str, field_name: &str) -> bool {
-    field_name == "_TintColors"
-        && matches!(
-            source_stem_from_target_stem(stem),
-            "pbsdistancelerp"
-                | "pbsdistancelerpspecular"
-                | "pbsdistancelerptransparent"
-                | "pbsdistancelerpspeculartransparent"
-        )
+    matches!(
+        (source_stem_from_target_stem(stem), field_name),
+        ("volumeunlit", "_HighlightColor")
+            | (
+                "pbsdistancelerp"
+                    | "pbsdistancelerpspecular"
+                    | "pbsdistancelerptransparent"
+                    | "pbsdistancelerpspeculartransparent",
+                "_TintColors",
+            )
+    )
 }
 
 fn source_stem_from_target_stem(stem: &str) -> &str {
@@ -158,10 +166,10 @@ mod tests {
     }
 
     #[test]
-    fn srgb_conversion_matches_elements_material_profile_rules() {
+    fn srgb_conversion_matches_transfer_curve() {
         let linear = crate::color_space::srgb_f32x4_rgb_to_linear([-0.5, 0.04045, 1.25, 0.33]);
 
-        assert!((linear[0] - -0.214_041_14).abs() < 0.000_001);
+        assert!((linear[0] - (-0.5 / 12.92)).abs() < 0.000_001);
         assert!((linear[1] - (0.04045 / 12.92)).abs() < 0.000_001);
         assert!((linear[2] - 1.633_811_8).abs() < 0.000_001);
         assert_eq!(linear[3], 0.33);
@@ -178,6 +186,22 @@ mod tests {
         let pbs = reflected_material_value_spaces("pbsmetallic_default");
         assert!(pbs.is_srgb_vec4("_Color"));
         assert!(pbs.is_srgb_vec4("_EmissionColor"));
+    }
+
+    #[test]
+    fn metadata_marks_furfx_authored_color_uniforms() {
+        let fur = reflected_material_value_spaces("furfx-3.0-20layer_default");
+        assert!(fur.is_srgb_vec4("_BonusAmbient"));
+        assert!(fur.is_srgb_vec4("_ReflColor"));
+    }
+
+    #[test]
+    fn metadata_marks_fogbox_accumulation_colors() {
+        let fogbox = reflected_material_value_spaces("fogboxvolume_default");
+        assert!(fogbox.is_srgb_vec4("_BaseColor"));
+        assert!(fogbox.is_srgb_vec4("_AccumulationColor"));
+        assert!(fogbox.is_srgb_vec4("_AccumulationColorBottom"));
+        assert!(fogbox.is_srgb_vec4("_AccumulationColorTop"));
     }
 
     #[test]
@@ -201,6 +225,12 @@ mod tests {
         let gradient = reflected_material_value_spaces("gradientskybox_default");
         assert!(!gradient.is_srgb_vec4_array("_Color0"));
         assert!(!gradient.is_srgb_vec4_array("_Color1"));
+
+        let volume = reflected_material_value_spaces("volumeunlit_default");
+        assert!(volume.is_srgb_vec4_array("_HighlightColor"));
+        assert!(!volume.is_srgb_vec4_array("_HighlightNormal"));
+        assert!(!volume.is_srgb_vec4_array("_HighlightOffset"));
+        assert!(!volume.is_srgb_vec4_array("_HighlightRange"));
     }
 
     #[test]

@@ -9,6 +9,10 @@
 //#texture_default _SpecularMap white
 //#texture_default _EmissionMap black
 //#texture_default _OcclusionMap white
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _SpecularColor vec4 1.0 1.0 1.0 0.5
+//#mat_default _TriBlendPower float 4.0
 
 #import renderide::draw::per_draw as pd
 #import renderide::material::variant_bits as vb
@@ -186,7 +190,7 @@ fn vs_main(
     return out;
 }
 
-//#pass forward_transparent
+//#pass type=forward name=forward_transparent blend=transparent_material zwrite=material(off) cull=material(off) color_mask=material(rgba)
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
@@ -198,13 +202,14 @@ fn fs_forward_base(
     @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let s = sample_surface(world_n, projection_n, proj_pos, front_facing, view_layer);
-    let surface = psurf::specular(
+    let surface = psurf::specular_with_geometric_normal(
         s.base_color,
         s.alpha,
         s.f0,
         s.roughness,
         s.occlusion,
         s.normal,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
         s.emission,
     );
     return plight::shade_specular_transparent_clustered(

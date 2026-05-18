@@ -86,11 +86,15 @@ impl BackendDrawPreparation {
             material_batch_caches,
             render_worlds,
         } = self;
-        let property_store = materials.material_property_store();
-        let router = materials
-            .material_registry()
-            .map_or(&*null_material_router, |registry| &registry.router);
-        let pipeline_property_ids = materials.pipeline_property_resolver().resolve();
+        let (property_store, router, pipeline_property_ids) = {
+            profiling::scope!("render::extract_frame_shared::material_inputs");
+            let property_store = materials.material_property_store();
+            let router = materials
+                .material_registry()
+                .map_or(&*null_material_router, |registry| &registry.router);
+            let pipeline_property_ids = materials.pipeline_property_resolver().resolve();
+            (property_store, router, pipeline_property_ids)
+        };
         {
             profiling::scope!("render::build_frame_prepared_renderables");
             prepare_render_worlds_for_views(
@@ -135,6 +139,7 @@ fn prepare_render_worlds_for_views(
     mesh_pool: &crate::gpu_pools::MeshPool,
     view_draw_preparations: &[(RenderingContext, ShaderPermutation)],
 ) {
+    profiling::scope!("render::prepare_render_worlds_for_views");
     for (index, &(render_context, _)) in view_draw_preparations.iter().enumerate() {
         let key = render_context_key(render_context);
         if view_draw_preparations[..index]
@@ -143,10 +148,13 @@ fn prepare_render_worlds_for_views(
         {
             continue;
         }
-        render_worlds
-            .entry(key)
-            .or_insert_with(|| RenderWorld::new(render_context))
-            .prepare_for_frame(scene, mesh_pool, render_context);
+        {
+            profiling::scope!("render::prepare_render_worlds_for_views::context");
+            render_worlds
+                .entry(key)
+                .or_insert_with(|| RenderWorld::new(render_context))
+                .prepare_for_frame(scene, mesh_pool, render_context);
+        }
     }
 }
 
@@ -159,35 +167,44 @@ fn refresh_material_caches(
     view_draw_preparations: &[(RenderingContext, ShaderPermutation)],
 ) {
     profiling::scope!("render::build_frame_material_cache");
-    let dict = MaterialDictionary::new(property_store);
+    let dict = {
+        profiling::scope!("render::build_frame_material_cache::dictionary");
+        MaterialDictionary::new(property_store)
+    };
     for (index, &(render_context, view_perm)) in view_draw_preparations.iter().enumerate() {
         let context_key = render_context_key(render_context);
         let Some(render_world) = render_worlds.get(&context_key) else {
             continue;
         };
         if is_first_context_request(view_draw_preparations, index, context_key) {
-            refresh_material_cache(
-                material_batch_caches,
-                render_world,
-                &dict,
-                router,
-                pipeline_property_ids,
-                context_key,
-                ShaderPermutation(0),
-            );
+            {
+                profiling::scope!("render::build_frame_material_cache::default_permutation");
+                refresh_material_cache(
+                    material_batch_caches,
+                    render_world,
+                    &dict,
+                    router,
+                    pipeline_property_ids,
+                    context_key,
+                    ShaderPermutation(0),
+                );
+            }
         }
         if view_perm != ShaderPermutation(0)
             && is_first_permutation_request(view_draw_preparations, index, context_key, view_perm)
         {
-            refresh_material_cache(
-                material_batch_caches,
-                render_world,
-                &dict,
-                router,
-                pipeline_property_ids,
-                context_key,
-                view_perm,
-            );
+            {
+                profiling::scope!("render::build_frame_material_cache::view_permutation");
+                refresh_material_cache(
+                    material_batch_caches,
+                    render_world,
+                    &dict,
+                    router,
+                    pipeline_property_ids,
+                    context_key,
+                    view_perm,
+                );
+            }
         }
     }
 }
@@ -201,6 +218,7 @@ fn refresh_material_cache(
     context_key: u8,
     shader_perm: ShaderPermutation,
 ) {
+    profiling::scope!("render::refresh_material_cache");
     material_batch_caches
         .entry((context_key, shader_perm))
         .or_default()

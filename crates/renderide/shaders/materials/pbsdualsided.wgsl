@@ -13,6 +13,10 @@
 //#texture_default _EmissionMap black
 //#texture_default _OcclusionMap white
 //#texture_default _MetallicMap black
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _AlphaClip float 0.5
+//#mat_default _Glossiness float 0.5
 
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
@@ -159,7 +163,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward_two_sided
+//#pass type=forward name=forward_two_sided cull=material(off)
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
@@ -172,13 +176,14 @@ fn fs_forward_base(
     @location(5) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let s = sample_surface(uv0, world_n, world_t, front_facing, color);
-    let surface = psurf::metallic(
+    let surface = psurf::metallic_with_geometric_normal(
         s.base_color,
         s.alpha,
         s.metallic,
         s.roughness,
         s.occlusion,
         s.normal,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
         s.emission,
     );
     return vec4<f32>(

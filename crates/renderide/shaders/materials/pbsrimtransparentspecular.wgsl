@@ -1,8 +1,8 @@
 //! Unity PBS rim transparent specular (`Shader "PBSRimTransparentSpecular"`): same surface logic
 //! as [`pbsrimspecular`](super::pbsrimspecular).
 //!
-//! Transparent default render state is driven by the host's `_SrcBlend` / `_DstBlend` / `_ZWrite`
-//! material properties; the WGSL is identical to the opaque sibling.
+//! Transparent blend and depth-write state is driven by the host's material properties; the forward
+//! pass is back-culled to match Unity's rim-transparent material behavior.
 //!
 //! Variant metadata never enables `_ALBEDOTEX`, so the albedo branch is unreachable in this
 //! material. `_Color` is the only base color and `_MainTex` is not bound.
@@ -15,6 +15,11 @@
 //#texture_default _EmissionMap black
 //#texture_default _OcclusionMap white
 //#texture_default _SpecularMap white
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _RimColor vec4 1.0 0.0 0.0 1.0
+//#mat_default _SpecularColor vec4 1.0 1.0 1.0 0.5
+//#mat_default _RimPower float 3.0
 
 #import renderide::frame::globals as rg
 #import renderide::material::fresnel as mf
@@ -86,7 +91,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward_transparent
+//#pass type=forward name=forward_transparent_cull_back blend=transparent_material zwrite=material(off) cull=back color_mask=material(rgba)
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
@@ -128,7 +133,16 @@ fn fs_main(
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
     let rim = mf::rim_factor(n, view_dir, mat._RimPower);
     let rim_emission = mat._RimColor.rgb * rim;
-    let surface = psurf::specular(base_color, alpha, f0, roughness, occlusion, n, emission + rim_emission);
+    let surface = psurf::specular_with_geometric_normal(
+        base_color,
+        alpha,
+        f0,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        emission + rim_emission,
+    );
     return plight::shade_specular_transparent_clustered(
         frag_pos.xy,
         world_pos,

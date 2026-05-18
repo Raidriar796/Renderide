@@ -7,10 +7,16 @@
 //#texture_default _NearTex white
 //#texture_default _NormalMap bump
 //#texture_default _MaskTex white
+//#mat_default _Exp float 1.0
+//#mat_default _FarColor vec4 0.0 0.0 0.0 1.0
+//#mat_default _GammaCurve float 1.0
+//#mat_default _NearColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _PolarPow float 1.0
+//#mat_default _Cutoff float 0.5
 
 #import renderide::frame::globals as rg
 #import renderide::pbs::normal as pnorm
-#import renderide::material::alpha_clip_sample as acs
 #import renderide::material::alpha as ma
 #import renderide::material::fresnel as mf
 #import renderide::material::sample as ms
@@ -131,7 +137,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main(in: mv::WorldColorVertexOutput) -> @location(0) vec4<f32> {
     var n = normalize(in.world_n);
@@ -159,23 +165,17 @@ fn fs_main(in: mv::WorldColorVertexOutput) -> @location(0) vec4<f32> {
 
     var color = mf::near_far_color(near_color, far_color, fres);
     var clip_a = color.a;
-    if (kw_TEXTURE()) {
-        let far_clip = mat._FarColor * ms::sample_rgba_lod0(_FarTex, _FarTex_sampler, in.primary_uv, mat._FarTex_ST, mat._PolarPow, use_polar);
-        let near_clip = mat._NearColor * ms::sample_rgba_lod0(_NearTex, _NearTex_sampler, in.primary_uv, mat._NearTex_ST, mat._PolarPow, use_polar);
-        clip_a = mix(near_clip.a, far_clip.a, clamp(fres, 0.0, 1.0));
-    }
 
     if (kw_MASK_TEXTURE_MUL() || kw_MASK_TEXTURE_CLIP()) {
         let uv_mask = uvu::apply_st(in.primary_uv, mat._MaskTex_ST);
         let mask = textureSample(_MaskTex, _MaskTex_sampler, uv_mask);
         let mul = ma::mask_luminance(mask);
-        let mul_clip = acs::mask_luminance_mul_base_mip(_MaskTex, _MaskTex_sampler, uv_mask);
 
         if (kw_MASK_TEXTURE_MUL()) {
             color.a = color.a * mul;
-            clip_a = clip_a * mul_clip;
+            clip_a = clip_a * mul;
         }
-        if (kw_MASK_TEXTURE_CLIP() && mul_clip <= mat._Cutoff) {
+        if (kw_MASK_TEXTURE_CLIP() && mul <= mat._Cutoff) {
             discard;
         }
     }

@@ -188,18 +188,18 @@ impl FrameUploadBatch {
         max_buffer_size: u64,
         upload_arena: &mut PersistentUploadArena,
         avoid_mapped_staging: bool,
+        profiler: Option<&mut crate::profiling::GpuProfilerHandle>,
     ) -> Option<FrameUploadFlush> {
         crate::profiling::scope!("frame_upload::drain_and_flush");
         let (writes, payload_bytes, mut stats) = self.take_recorded_uploads()?;
         if avoid_mapped_staging {
             force_queue_fallback_stats(&mut stats);
             replay_all_writes_through_queue(queue, &writes, &payload_bytes);
-            let (command_buffer, finish_ms) = record_empty_upload_command_buffer(device);
-            stats.finish_ms = finish_ms;
+            stats.finish_ms = 0.0;
             stats.apply_arena_pressure(upload_arena.pressure());
             self.restore_recorded_upload_capacity(writes, payload_bytes);
             return Some(FrameUploadFlush {
-                command_buffer,
+                command_buffer: None,
                 on_submitted_work_done: None,
                 stats,
             });
@@ -228,6 +228,7 @@ impl FrameUploadBatch {
             &plans,
             &payload_bytes,
             staging.buffer.as_ref(),
+            profiler,
         );
         stats.finish_ms = finish_ms;
         stats.apply_arena_pressure(upload_arena.pressure());
@@ -381,40 +382,46 @@ fn record_upload_command_buffer(
     plans: &[WritePlan],
     payload_bytes: &[u8],
     staging: Option<&wgpu::Buffer>,
-) -> (wgpu::CommandBuffer, f64) {
+    profiler: Option<&mut crate::profiling::GpuProfilerHandle>,
+) -> (Option<wgpu::CommandBuffer>, f64) {
     crate::profiling::scope!("frame_upload::record_encoder");
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("frame_upload_staging_belt"),
+    let needs_copy_commands = staging.is_some()
+        && plans
+            .iter()
+            .any(|plan| matches!(plan, WritePlan::Stage { .. }));
+    let mut encoder = needs_copy_commands.then(|| {
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("frame_upload_staging_belt"),
+        })
+    });
+    let upload_copy_query = encoder.as_mut().and_then(|encoder| {
+        profiler
+            .as_deref()
+            .map(|p| p.begin_query("frame_upload::copy_buffer_batch", encoder))
     });
     for (write, plan) in writes.iter().zip(plans.iter()) {
-        record_upload_write(&mut encoder, queue, write, plan, payload_bytes, staging);
+        record_upload_write(encoder.as_mut(), queue, write, plan, payload_bytes, staging);
     }
-    {
+    if let Some(mut encoder) = encoder {
+        if let Some(query) = upload_copy_query
+            && let Some(profiler) = profiler
+        {
+            profiler.end_query(&mut encoder, query);
+            profiler.resolve_queries(&mut encoder);
+        }
         crate::profiling::scope!("CommandEncoder::finish::frame_upload");
         let finish_start = Instant::now();
         let command_buffer = encoder.finish();
         let finish_ms = finish_start.elapsed().as_secs_f64() * 1000.0;
-        (command_buffer, finish_ms)
-    }
-}
-
-fn record_empty_upload_command_buffer(device: &wgpu::Device) -> (wgpu::CommandBuffer, f64) {
-    crate::profiling::scope!("frame_upload::record_empty_encoder");
-    let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("frame_upload_queue_fallback"),
-    });
-    {
-        crate::profiling::scope!("CommandEncoder::finish::frame_upload_queue_fallback");
-        let finish_start = Instant::now();
-        let command_buffer = encoder.finish();
-        let finish_ms = finish_start.elapsed().as_secs_f64() * 1000.0;
-        (command_buffer, finish_ms)
+        (Some(command_buffer), finish_ms)
+    } else {
+        (None, 0.0)
     }
 }
 
 /// Records one staged copy or fallback queue write.
 fn record_upload_write(
-    encoder: &mut wgpu::CommandEncoder,
+    encoder: Option<&mut wgpu::CommandEncoder>,
     queue: &wgpu::Queue,
     write: &QueueWrite,
     plan: &WritePlan,
@@ -432,7 +439,7 @@ fn record_upload_write(
             staging_offset,
             len,
         } => {
-            if let Some(staging_buf) = staging {
+            if let (Some(staging_buf), Some(encoder)) = (staging, encoder) {
                 encoder.copy_buffer_to_buffer(staging_buf, *staging_offset, buffer, *offset, *len);
             } else {
                 profiling::scope!("frame_upload::staged_queue_fallback_write_buffer");

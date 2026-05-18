@@ -3,6 +3,8 @@
 //! No `#pragma multi_compile` user keywords on this shader; `_RenderideVariantBits` is
 //! reserved for layout consistency with the rest of the embedded materials and is never read.
 
+//#mat_default _Color vec4 0.5 0.5 0.5 1.0
+
 #import renderide::frame::globals as rg
 #import renderide::mesh::vertex as mv
 
@@ -30,7 +32,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
     // Touch the renderer-reserved uniform so naga-oil keeps the binding live across import pruning.

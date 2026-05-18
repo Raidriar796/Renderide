@@ -34,17 +34,40 @@ fn logical_window_size(window: &dyn Window) -> LogicalSize<f64> {
     window.surface_size().to_logical(window.scale_factor())
 }
 
+/// Returns the cursor anchor requested by the host, or the logical window center for relative lock.
+fn cursor_anchor_from_lock_or_size(
+    lock_cursor_position: Option<IVec2>,
+    logical_size: LogicalSize<f64>,
+) -> Vec2 {
+    lock_cursor_position.map_or_else(
+        || {
+            Vec2::new(
+                (logical_size.width / 2.0) as f32,
+                (logical_size.height / 2.0) as f32,
+            )
+        },
+        |p| Vec2::new(p.x as f32, p.y as f32),
+    )
+}
+
 fn lock_cursor_position_or_center(
     lock_cursor_position: Option<IVec2>,
     window: &dyn Window,
 ) -> Vec2 {
-    lock_cursor_position.map_or_else(
-        || {
-            let logical = logical_window_size(window);
-            Vec2::new((logical.width / 2.0) as f32, (logical.height / 2.0) as f32)
-        },
-        |p| Vec2::new(p.x as f32, p.y as f32),
-    )
+    cursor_anchor_from_lock_or_size(lock_cursor_position, logical_window_size(window))
+}
+
+/// Mirrors a cursor-transition anchor into host-facing input state.
+fn sync_accumulator_to_cursor_anchor(
+    window: &dyn Window,
+    acc: &mut WindowInputAccumulator,
+    anchor: Vec2,
+) {
+    acc.sync_window_resolution_logical(window);
+    acc.set_window_position_from_logical(anchor, window.scale_factor());
+    if acc.window_focused {
+        acc.mouse_active = true;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,6 +171,7 @@ pub fn apply_per_frame_cursor_lock_when_locked(
 /// Use [`apply_per_frame_cursor_lock_when_locked`] each frame while locked for software anchoring.
 pub fn apply_output_state_to_window(
     window: &dyn Window,
+    acc: &mut WindowInputAccumulator,
     state: &OutputState,
     track: &mut CursorOutputTracking,
 ) -> Result<(), winit::error::RequestError> {
@@ -166,24 +190,27 @@ pub fn apply_output_state_to_window(
     let prev_lock_position_for_unlock = track.last_lock_position;
 
     if state.lock_cursor {
+        let target = lock_cursor_position_or_center(state.lock_cursor_position, window);
+        let _ = warp_cursor_logical(window, target);
         let active_grab_mode = Some(apply_cursor_grab(
             window,
             grab_preference(state.lock_cursor_position),
         )?);
         window.set_cursor_visible(false);
-        let target = lock_cursor_position_or_center(state.lock_cursor_position, window);
         let _ = warp_cursor_logical(window, target);
+        sync_accumulator_to_cursor_anchor(window, acc, target);
         track.last_lock_cursor = state.lock_cursor;
         track.last_lock_position = state.lock_cursor_position;
         track.active_grab_mode = active_grab_mode;
         return Ok(());
     }
 
+    let release_anchor = lock_cursor_position_or_center(prev_lock_position_for_unlock, window);
+    let _ = warp_cursor_logical(window, release_anchor);
     window.set_cursor_grab(CursorGrabMode::None)?;
+    let _ = warp_cursor_logical(window, release_anchor);
+    sync_accumulator_to_cursor_anchor(window, acc, release_anchor);
     window.set_cursor_visible(true);
-    if let Some(p) = prev_lock_position_for_unlock {
-        let _ = warp_cursor_logical(window, Vec2::new(p.x as f32, p.y as f32));
-    }
     track.last_lock_cursor = state.lock_cursor;
     track.last_lock_position = state.lock_cursor_position;
     track.active_grab_mode = None;
@@ -197,9 +224,11 @@ mod tests {
 
     use super::{
         CONFINED_RECENTER_DRIFT_PX, CONFINED_RECENTER_MARGIN_PX, CursorGrabPreference,
-        CursorOutputTracking, grab_preference, lock_state_changed, should_recenter_confined_cursor,
+        CursorOutputTracking, cursor_anchor_from_lock_or_size, grab_preference, lock_state_changed,
+        should_recenter_confined_cursor,
     };
     use crate::shared::OutputState;
+    use winit::dpi::LogicalSize;
 
     #[test]
     fn grab_preference_uses_locked_for_relative_mode() {
@@ -220,6 +249,33 @@ mod tests {
                 primary: CursorGrabMode::Confined,
                 fallback: CursorGrabMode::Locked,
             }
+        );
+    }
+
+    #[test]
+    fn cursor_anchor_uses_center_for_relative_lock() {
+        assert_eq!(
+            cursor_anchor_from_lock_or_size(None, LogicalSize::new(800.0, 600.0)),
+            Vec2::new(400.0, 300.0)
+        );
+    }
+
+    #[test]
+    fn cursor_anchor_uses_explicit_lock_position() {
+        assert_eq!(
+            cursor_anchor_from_lock_or_size(
+                Some(IVec2::new(120, 240)),
+                LogicalSize::new(800.0, 600.0),
+            ),
+            Vec2::new(120.0, 240.0)
+        );
+    }
+
+    #[test]
+    fn cursor_anchor_keeps_zero_size_center() {
+        assert_eq!(
+            cursor_anchor_from_lock_or_size(None, LogicalSize::new(0.0, 0.0)),
+            Vec2::ZERO
         );
     }
 

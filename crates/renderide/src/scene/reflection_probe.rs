@@ -8,7 +8,7 @@ use crate::shared::{
     ReflectionProbeRenderablesUpdate, ReflectionProbeState, ReflectionProbeType,
 };
 
-use super::dense_update::{push_dense_additions, swap_remove_dense_indices};
+use super::dense_update::{push_dense_additions, swap_remove_dense_indices_with_update};
 use super::error::SceneError;
 use super::render_space::RenderSpaceState;
 use super::transforms::TransformRemovalEvent;
@@ -119,6 +119,18 @@ pub(crate) fn extract_reflection_probe_renderables_update(
     Ok(out)
 }
 
+fn update_moved_reflection_probe(probe: &mut ReflectionProbeEntry, index: i32) {
+    probe.renderable_index = index;
+}
+
+fn build_added_reflection_probe(transform_id: i32, renderable_index: i32) -> ReflectionProbeEntry {
+    ReflectionProbeEntry {
+        renderable_index,
+        transform_id,
+        state: ReflectionProbeState::default(),
+    }
+}
+
 /// Applies a pre-extracted reflection-probe update to one render space.
 pub(crate) fn apply_reflection_probe_renderables_update_extracted(
     space: &mut RenderSpaceState,
@@ -127,15 +139,15 @@ pub(crate) fn apply_reflection_probe_renderables_update_extracted(
     profiling::scope!("scene::apply_reflection_probes");
     space.pending_reflection_probe_render_changes.clear();
 
-    swap_remove_dense_indices(&mut space.reflection_probes, &extracted.removals);
+    swap_remove_dense_indices_with_update(
+        &mut space.reflection_probes,
+        &extracted.removals,
+        update_moved_reflection_probe,
+    );
     push_dense_additions(
         &mut space.reflection_probes,
         &extracted.additions,
-        |transform_id| ReflectionProbeEntry {
-            renderable_index: -1,
-            transform_id,
-            state: ReflectionProbeState::default(),
-        },
+        &build_added_reflection_probe,
     );
     for state in &extracted.states {
         if state.renderable_index < 0 {

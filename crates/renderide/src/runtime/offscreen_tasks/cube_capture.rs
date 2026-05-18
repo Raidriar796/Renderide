@@ -393,6 +393,24 @@ impl CubeCaptureTargets {
             array_layer_count: Some(CUBEMAP_ARRAY_LAYERS),
         }))
     }
+
+    /// Creates a two-dimensional array sample view over every cubemap face and mip.
+    pub(in crate::runtime) fn array_sample_view(
+        &self,
+        label: &'static str,
+    ) -> Arc<wgpu::TextureView> {
+        Arc::new(self.cube_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some(label),
+            format: Some(self.color_format),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            mip_level_count: Some(self.extent.mip_levels),
+            base_array_layer: 0,
+            array_layer_count: Some(CUBEMAP_ARRAY_LAYERS),
+        }))
+    }
 }
 
 /// Builds a texture-view descriptor exposing one cubemap face as a 2D render attachment.

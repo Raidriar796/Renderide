@@ -6,7 +6,8 @@ use crate::backend::frame_gpu::{
     REFLECTION_PROBE_METADATA_SH2_SOURCE_LOCAL,
 };
 use crate::scene::{
-    ReflectionProbeEntry, RenderSpaceId, SceneCoordinator, reflection_probe_use_box_projection,
+    ReflectionProbeEntry, RenderSpaceId, SceneCoordinator, reflection_probe_skybox_only,
+    reflection_probe_use_box_projection,
 };
 use crate::shared::{ReflectionProbeClear, ReflectionProbeState, ReflectionProbeType, RenderSH2};
 use crate::skybox::specular::{
@@ -60,8 +61,10 @@ fn resolve_runtime_capture_source(
         generation: capture.generation,
         face_size: capture.face_size,
         mip_levels: capture.mip_levels,
+        storage_v_inverted: true,
         texture: capture.texture.clone(),
         view: capture.view.clone(),
+        array_view: capture.array_view.clone(),
     }))
 }
 
@@ -87,6 +90,7 @@ pub(super) fn resolve_baked_probe_source(
         content_generation: cubemap.content_generation,
         storage_v_inverted: cubemap.storage_v_inverted,
         view: cubemap.view.clone(),
+        array_view: cubemap.array_view.clone(),
     }))
 }
 
@@ -141,7 +145,7 @@ pub(super) fn spatial_probe_for_state(
         influence_aabb_max,
         center: Vec3A::from(world.transform_point3(Vec3::ZERO)),
         volume: aabb_volume(min, max),
-        blend_distance,
+        skybox: reflection_probe_skybox_only(probe.state.flags),
     })
 }
 
@@ -209,7 +213,7 @@ mod tests {
             influence_aabb_max,
             center: Vec3A::from((min + max) * 0.5),
             volume: aabb_volume(min, max),
-            blend_distance: 0.0,
+            skybox: false,
         }
     }
 

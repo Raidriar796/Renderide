@@ -202,7 +202,7 @@ impl ReflectionProbeSpecularSystem {
 
     fn sync_atlas_and_selection(
         &mut self,
-        gpu: &GpuContext,
+        gpu: &mut GpuContext,
         face_size: u32,
         mut ready: Vec<ReadyProbe>,
     ) {
@@ -278,7 +278,7 @@ impl ReflectionProbeSpecularSystem {
         let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("reflection_probe_specular_atlas_view"),
             format: Some(REFLECTION_PROBE_ATLAS_FORMAT),
-            dimension: Some(wgpu::TextureViewDimension::CubeArray),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
             usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
             aspect: wgpu::TextureAspect::All,
             base_mip_level: 0,
@@ -314,7 +314,7 @@ impl ReflectionProbeSpecularSystem {
         );
         self.version = self.version.wrapping_add(1).max(1);
         self.resources = Some(ReflectionProbeSpecularResources {
-            cube_array_view: view,
+            array_view: view,
             sampler,
             metadata_buffer,
             version: self.version,
@@ -341,11 +341,12 @@ impl ReflectionProbeSpecularSystem {
 
     fn encode_atlas_copies(
         &self,
-        gpu: &GpuContext,
+        gpu: &mut GpuContext,
         face_size: u32,
         atlas_mips: u32,
         copy_jobs: Vec<AtlasCopyJob>,
     ) {
+        profiling::scope!("reflection_probes::specular::atlas_copies");
         if copy_jobs.is_empty() {
             return;
         }
@@ -357,6 +358,10 @@ impl ReflectionProbeSpecularSystem {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("reflection_probe_atlas_copy"),
             });
+        let mut profiler = gpu.take_gpu_profiler();
+        let copy_query = profiler
+            .as_ref()
+            .map(|p| p.begin_query("reflection_probe_specular::atlas_copies", &mut encoder));
         for job in copy_jobs {
             let mips = job.mip_levels.min(atlas_mips);
             for mip in 0..mips {
@@ -386,7 +391,16 @@ impl ReflectionProbeSpecularSystem {
                 );
             }
         }
-        gpu.submit_frame_batch(vec![encoder.finish()], None, None);
+        if let (Some(profiler), Some(query)) = (profiler.as_mut(), copy_query) {
+            profiler.end_query(&mut encoder, query);
+            profiler.resolve_queries(&mut encoder);
+        }
+        let command_buffer = {
+            profiling::scope!("CommandEncoder::finish::reflection_probe_atlas_copy");
+            encoder.finish()
+        };
+        gpu.restore_gpu_profiler(profiler);
+        gpu.submit_frame_batch(vec![command_buffer], None, None);
     }
 }
 
@@ -417,6 +431,7 @@ mod tests {
                 renderable_index: 0,
                 generation: 1,
                 mip_levels: 1,
+                storage_v_inverted: true,
                 face_size: 128,
             },
             &spaces,

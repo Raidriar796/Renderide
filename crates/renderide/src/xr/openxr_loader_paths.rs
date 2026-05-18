@@ -1,9 +1,10 @@
 //! Helpers for locating the Khronos OpenXR **loader** shared library at run time (`openxr_loader.dll`
 //! on Windows, `libopenxr_loader.so` on Linux, `libopenxr_loader.dylib` on macOS).
 //!
-//! On Windows, the crate `build.rs` also copies a vendored `openxr_loader.dll` into the build output
+//! On Windows and macOS, the crate `build.rs` also copies a vendored loader into the build output
 //! directory so it sits next to built executables; [`openxr_loader_candidate_paths`] still checks the
-//! executable directory first so shipped layouts work without relying on `PATH`.
+//! executable directory first so shipped layouts work without relying on `PATH` or platform library
+//! search paths.
 //!
 //! # Override path
 //!

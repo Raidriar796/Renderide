@@ -14,6 +14,11 @@
 //#texture_default _EmissionMap black
 //#texture_default _OcclusionMap white
 //#texture_default _MetallicMap black
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _RimColor vec4 1.0 0.0 0.0 1.0
+//#mat_default _Glossiness float 0.5
+//#mat_default _RimPower float 3.0
 
 #import renderide::frame::globals as rg
 #import renderide::material::fresnel as mf
@@ -103,7 +108,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
@@ -142,13 +147,14 @@ fn fs_main(
     let rim = mf::rim_factor(n, view_dir, mat._RimPower);
     let rim_emission = mat._RimColor.rgb * rim;
 
-    let surface = psurf::metallic(
+    let surface = psurf::metallic_with_geometric_normal(
         base_color,
         alpha,
         metallic,
         roughness,
         occlusion,
         n,
+        world_n,
         emission + rim_emission,
     );
     let color = plight::shade_metallic_clustered(

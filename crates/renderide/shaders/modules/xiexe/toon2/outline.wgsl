@@ -28,13 +28,13 @@
 #import renderide::xiexe::toon2::variant_bits as xvb
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
-#import renderide::core::uv as uvu
 
 /// Outline vertex transform. Samples `_OutlineMask` at UV0, extrudes
 /// the vertex along its object-space normal by `_OutlineWidth * 0.01 * mask * dist_scale`,
 /// then runs the standard vertex pipeline so downstream interpolants stay consistent
-/// with the forward path. The output color is overridden with `_OutlineColor` so the
-/// fragment can also distinguish outline fragments via `color.a` if needed.
+/// with the forward path. The output color carries `_OutlineColor.rgb` so vertex-color
+/// albedo variants tint outline surface data consistently; alpha is kept as an outline
+/// shell marker even though Renderide routes outline rendering through a separate pass.
 fn vertex_outline(
     instance_index: u32,
     view_idx: u32,
@@ -107,6 +107,10 @@ fn fragment_outline_for_layout(
     alpha_mode: u32,
     keyword_layout: u32,
 ) -> vec4<f32> {
+    if (front_facing) {
+        discard;
+    }
+
     let s = xsurf::sample_surface_for_layout(false, front_facing, world_pos, world_n, world_t, world_b, uv_primary, uv_secondary, color, keyword_layout);
     let alpha = xa::apply_alpha(alpha_mode, frag_pos.xy, world_pos, view_layer, uv_primary, s.albedo.a, s.clip_alpha);
 

@@ -2,19 +2,20 @@
 
 #define_import_path renderide::lighting::reflection_probes
 
-#import renderide::skybox::cubemap_storage as cubemap_storage
 #import renderide::frame::globals as rg
 #import renderide::frame::types as ft
+#import renderide::ibl::cubemap_filter as cube_filter
 #import renderide::pbs::brdf as brdf
 #import renderide::draw::per_draw as pd
 #import renderide::draw::types as dt
 #import renderide::ibl::sh2_ambient as shamb
 
 const PROBE_FLAG_BOX_PROJECTION: f32 = 1.0;
-const REFLECTION_PROBE_ATLAS_STORAGE_V_INVERTED: f32 = 1.0;
 const PROBE_SH2_SOURCE_NONE: f32 = 0.0;
 const MIN_PROBE_BLEND_DISTANCE: f32 = 1e-6;
 const MIN_PROBE_BLEND_WEIGHT: f32 = 1e-5;
+const BOX_PROJECTION_FULL_ROUGHNESS: f32 = 0.55;
+const BOX_PROJECTION_OFF_ROUGHNESS: f32 = 0.90;
 
 fn selected_draw(view_layer: u32) -> dt::PerDrawUniforms {
     return pd::get_draw(rg::draw_index_from_layer(view_layer));
@@ -22,13 +23,33 @@ fn selected_draw(view_layer: u32) -> dt::PerDrawUniforms {
 
 fn has_indirect_specular(view_layer: u32, enabled: bool) -> bool {
     let draw = selected_draw(view_layer);
-    return enabled && pd::reflection_probe_hit_count(draw) > 0u;
+    return enabled && pd::has_reflection_probe_selection(draw);
 }
 
 fn dominant_reflection_dir(n: vec3<f32>, v: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
     let r = reflect(-v, n);
-    let blend = perceptual_roughness * perceptual_roughness;
+    let roughness = clamp(perceptual_roughness, 0.0, 1.0);
+    let blend = roughness * roughness;
     return normalize(mix(r, n, blend));
+}
+
+fn horizon_specular_occlusion(
+    n: vec3<f32>,
+    geometric_n: vec3<f32>,
+    v: vec3<f32>,
+    perceptual_roughness: f32,
+) -> f32 {
+    let dir = dominant_reflection_dir(n, v, perceptual_roughness);
+    let base_n = horizon_normal(n, geometric_n);
+    let horizon = clamp(1.0 + dot(dir, base_n), 0.0, 1.0);
+    return horizon * horizon;
+}
+
+fn horizon_normal(n: vec3<f32>, geometric_n: vec3<f32>) -> vec3<f32> {
+    if (dot(geometric_n, geometric_n) <= 1e-12) {
+        return normalize(n);
+    }
+    return normalize(geometric_n);
 }
 
 fn roughness_lod(perceptual_roughness: f32, max_lod: f32) -> f32 {
@@ -54,8 +75,21 @@ fn probe_edge_weight(probe: ft::GpuReflectionProbe, world_pos: vec3<f32>) -> f32
     return clamp(1.0 - outside_distance / blend_distance, 0.0, 1.0);
 }
 
-fn box_project_dir(probe: ft::GpuReflectionProbe, world_pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
+fn box_project_dir(
+    probe: ft::GpuReflectionProbe,
+    world_pos: vec3<f32>,
+    dir: vec3<f32>,
+    perceptual_roughness: f32,
+) -> vec3<f32> {
     if (probe.params.z < PROBE_FLAG_BOX_PROJECTION) {
+        return dir;
+    }
+    let projection_weight = 1.0 - smoothstep(
+        BOX_PROJECTION_FULL_ROUGHNESS,
+        BOX_PROJECTION_OFF_ROUGHNESS,
+        clamp(perceptual_roughness, 0.0, 1.0),
+    );
+    if (projection_weight <= 0.0) {
         return dir;
     }
     let blend_distance = probe_blend_distance(probe);
@@ -68,7 +102,8 @@ fn box_project_dir(probe: ft::GpuReflectionProbe, world_pos: vec3<f32>, dir: vec
     if (distance <= 0.0) {
         return dir;
     }
-    return normalize(world_pos + safe_dir * distance - probe.position.xyz);
+    let projected = normalize(world_pos + safe_dir * distance - probe.position.xyz);
+    return normalize(mix(dir, projected, projection_weight));
 }
 
 fn sample_probe_radiance(
@@ -85,59 +120,71 @@ fn sample_probe_radiance(
     if (intensity <= 0.0) {
         return vec3<f32>(0.0);
     }
-    let sample_dir = box_project_dir(probe, world_pos, dir);
-    let atlas_sample_dir = cubemap_storage::sample_dir(
-        sample_dir,
-        REFLECTION_PROBE_ATLAS_STORAGE_V_INVERTED,
-    );
+    let sample_dir = box_project_dir(probe, world_pos, dir, perceptual_roughness);
     let lod = roughness_lod(perceptual_roughness, max(probe.params.y, 0.0));
-    return textureSampleLevel(
+    return cube_filter::sample_trilinear_base(
         rg::reflection_probe_specular,
-        rg::reflection_probe_specular_sampler,
-        atlas_sample_dir,
-        i32(atlas_index),
+        sample_dir,
         lod,
-    ).rgb * intensity;
+        textureDimensions(rg::reflection_probe_specular, 0).x,
+        max(probe.params.y, 0.0),
+        atlas_index * 6u,
+    ) * intensity;
 }
 
-fn blend_local_probe_with_fallback_radiance(
-    first_index: u32,
+struct ProbeBlendGroup {
+    weighted_result: vec3<f32>,
+    weight_sum: f32,
+    coverage: f32,
+}
+
+fn empty_probe_blend_group() -> ProbeBlendGroup {
+    return ProbeBlendGroup(vec3<f32>(0.0), 0.0, 0.0);
+}
+
+fn add_importance_to_total(total: vec4<f32>, importance: ProbeBlendGroup) -> vec4<f32> {
+    if (importance.weight_sum < MIN_PROBE_BLEND_WEIGHT || importance.coverage < MIN_PROBE_BLEND_WEIGHT) {
+        return total;
+    }
+    let remaining = min(importance.coverage, 1.0 - total.w);
+    let result = importance.weighted_result / importance.weight_sum;
+    return total + vec4<f32>(result * remaining, remaining);
+}
+
+fn finalize_radiance(
+    total: vec4<f32>,
+    importance: ProbeBlendGroup,
     fallback_index: u32,
     world_pos: vec3<f32>,
     dir: vec3<f32>,
     perceptual_roughness: f32,
 ) -> vec3<f32> {
-    let first_probe = rg::reflection_probes[first_index];
-    let edge_weight = probe_edge_weight(first_probe, world_pos);
-    let first = sample_probe_radiance(first_index, world_pos, dir, perceptual_roughness);
-    if (fallback_index == 0u) {
-        return first * edge_weight;
+    let total_result = add_importance_to_total(total, importance);
+    let remaining_weight = 1.0 - total_result.w;
+    if (remaining_weight < MIN_PROBE_BLEND_WEIGHT) {
+        return total_result.xyz;
     }
-    let fallback = sample_probe_radiance(fallback_index, world_pos, dir, perceptual_roughness);
-    return mix(fallback, first, edge_weight);
+    return total_result.xyz + remaining_weight * sample_probe_radiance(fallback_index, world_pos, dir, perceptual_roughness);
 }
 
-fn blend_two_local_probe_radiance(
-    first_index: u32,
-    second_index: u32,
+fn add_radiance_contribution_to_importance(
+    importance: ProbeBlendGroup,
+    index: u32,
     world_pos: vec3<f32>,
     dir: vec3<f32>,
     perceptual_roughness: f32,
-    second_weight: f32,
-) -> vec3<f32> {
-    let first_probe = rg::reflection_probes[first_index];
-    let second_probe = rg::reflection_probes[second_index];
-    let first_base = 1.0 - second_weight;
-    let second_base = second_weight;
-    let first_weight = first_base * probe_edge_weight(first_probe, world_pos);
-    let second_weighted = second_base * probe_edge_weight(second_probe, world_pos);
-    let total_weight = first_weight + second_weighted;
-    if (total_weight <= MIN_PROBE_BLEND_WEIGHT) {
-        return vec3<f32>(0.0);
+) -> ProbeBlendGroup {
+    let probe = rg::reflection_probes[index];
+    let probe_weight = probe_edge_weight(probe, world_pos);
+    if (probe_weight < MIN_PROBE_BLEND_WEIGHT) {
+        return importance;
     }
-    let first = sample_probe_radiance(first_index, world_pos, dir, perceptual_roughness);
-    let second = sample_probe_radiance(second_index, world_pos, dir, perceptual_roughness);
-    return (first * first_weight + second * second_weighted) / total_weight;
+    let probe_result = sample_probe_radiance(index, world_pos, dir, perceptual_roughness);
+    return ProbeBlendGroup(
+        importance.weighted_result + probe_weight * probe_result,
+        importance.weight_sum + probe_weight,
+        max(importance.coverage, probe_weight),
+    );
 }
 
 fn indirect_radiance(
@@ -152,23 +199,32 @@ fn indirect_radiance(
         return vec3<f32>(0.0);
     }
     let draw = selected_draw(view_layer);
-    let count = pd::reflection_probe_hit_count(draw);
-    let indices = pd::reflection_probe_indices(draw);
-    let dir = dominant_reflection_dir(n, v, perceptual_roughness);
-    if (count == 0u) {
+    if (!pd::has_reflection_probe_selection(draw)) {
         return vec3<f32>(0.0);
     }
-    if (count < 2u || indices.y == 0u) {
-        return blend_local_probe_with_fallback_radiance(indices.x, indices.y, world_pos, dir, perceptual_roughness);
+    let importance_mask = pd::reflection_probe_importance_mask(draw);
+    let dir = dominant_reflection_dir(n, v, perceptual_roughness);
+    let indices = pd::local_reflection_probe_indices(draw);
+    let fallback_index = pd::fallback_reflection_probe_index(draw);
+    var total = vec4<f32>(0.0);
+    var importance = empty_probe_blend_group();
+
+    for (var i = 0u; i < 4u; i++) {
+        let index = indices[i];
+        if (index == 0u) {
+            return finalize_radiance(total, importance, fallback_index, world_pos, dir, perceptual_roughness);
+        }
+        if ((importance_mask & (1u << i)) > 0u) {
+            total = add_importance_to_total(total, importance);
+            if (1.0 - total.w <= MIN_PROBE_BLEND_WEIGHT) {
+                return total.xyz;
+            }
+            importance = empty_probe_blend_group();
+        }
+        importance = add_radiance_contribution_to_importance(importance, index, world_pos, dir, perceptual_roughness);
     }
-    return blend_two_local_probe_radiance(
-        indices.x,
-        indices.y,
-        world_pos,
-        dir,
-        perceptual_roughness,
-        pd::reflection_probe_second_weight(draw),
-    );
+
+    return finalize_radiance(total, importance, fallback_index, world_pos, dir, perceptual_roughness);
 }
 
 fn probe_sh2_source(atlas_index: u32) -> f32 {
@@ -216,43 +272,37 @@ fn sample_probe_sh2_or_ambient(atlas_index: u32, normal_ws: vec3<f32>) -> vec3<f
     return ambient_probe_or_zero(normal_ws);
 }
 
-fn blend_local_probe_with_fallback_sh2(
-    first_index: u32,
+fn finalize_diffuse_sh2(
+    total: vec4<f32>,
+    importance: ProbeBlendGroup,
     fallback_index: u32,
-    world_pos: vec3<f32>,
     normal_ws: vec3<f32>,
 ) -> vec3<f32> {
-    let first_probe = rg::reflection_probes[first_index];
-    let edge_weight = probe_edge_weight(first_probe, world_pos);
-    let first = sample_probe_sh2_or_ambient(first_index, normal_ws);
-    if (fallback_index == 0u) {
-        let fallback = ambient_probe_or_zero(normal_ws);
-        return mix(fallback, first, edge_weight);
+    let total_result = add_importance_to_total(total, importance);
+    let remaining_weight = 1.0 - total_result.w;
+    if (remaining_weight < MIN_PROBE_BLEND_WEIGHT) {
+        return total_result.xyz;
     }
-    let fallback = sample_probe_sh2_or_ambient(fallback_index, normal_ws);
-    return mix(fallback, first, edge_weight);
+    return total_result.xyz + remaining_weight * sample_probe_sh2_or_ambient(fallback_index, normal_ws);
 }
 
-fn blend_two_local_probe_sh2(
-    first_index: u32,
-    second_index: u32,
+fn add_diffuse_sh2_contribution_to_importance(
+    importance: ProbeBlendGroup,
+    index: u32,
     world_pos: vec3<f32>,
     normal_ws: vec3<f32>,
-    second_weight: f32,
-) -> vec3<f32> {
-    let first_probe = rg::reflection_probes[first_index];
-    let second_probe = rg::reflection_probes[second_index];
-    let first_base = 1.0 - second_weight;
-    let second_base = second_weight;
-    let first_weight = first_base * probe_edge_weight(first_probe, world_pos);
-    let second_weighted = second_base * probe_edge_weight(second_probe, world_pos);
-    let total_weight = first_weight + second_weighted;
-    if (total_weight <= MIN_PROBE_BLEND_WEIGHT) {
-        return ambient_probe_or_zero(normal_ws);
+) -> ProbeBlendGroup {
+    let probe = rg::reflection_probes[index];
+    let probe_weight = probe_edge_weight(probe, world_pos);
+    if (probe_weight < MIN_PROBE_BLEND_WEIGHT) {
+        return importance;
     }
-    let first = sample_probe_sh2_or_ambient(first_index, normal_ws);
-    let second = sample_probe_sh2_or_ambient(second_index, normal_ws);
-    return (first * first_weight + second * second_weighted) / total_weight;
+    let probe_result = sample_probe_sh2_or_ambient(index, normal_ws);
+    return ProbeBlendGroup(
+        importance.weighted_result + probe_weight * probe_result,
+        importance.weight_sum + probe_weight,
+        max(importance.coverage, probe_weight),
+    );
 }
 
 fn indirect_diffuse(world_pos: vec3<f32>, normal_ws: vec3<f32>, view_layer: u32, enabled: bool) -> vec3<f32> {
@@ -260,29 +310,37 @@ fn indirect_diffuse(world_pos: vec3<f32>, normal_ws: vec3<f32>, view_layer: u32,
         return vec3<f32>(0.0);
     }
     let draw = selected_draw(view_layer);
-    let count = pd::reflection_probe_hit_count(draw);
-    let indices = pd::reflection_probe_indices(draw);
-    if (count > 0u) {
-        if (count < 2u || indices.y == 0u) {
-            return blend_local_probe_with_fallback_sh2(indices.x, indices.y, world_pos, normal_ws);
+    if (!pd::has_reflection_probe_selection(draw)) {
+        return ambient_probe_or_zero(normal_ws);
+    }
+    let importance_mask = pd::reflection_probe_importance_mask(draw);
+    let indices = pd::local_reflection_probe_indices(draw);
+    let fallback_index = pd::fallback_reflection_probe_index(draw);
+    var total = vec4<f32>(0.0);
+    var importance = empty_probe_blend_group();
+
+    for (var i = 0u; i < 4u; i++) {
+        let index = indices[i];
+        if (index == 0u) {
+            return finalize_diffuse_sh2(total, importance, fallback_index, normal_ws);
         }
-        return blend_two_local_probe_sh2(
-            indices.x,
-            indices.y,
-            world_pos,
-            normal_ws,
-            pd::reflection_probe_second_weight(draw),
-        );
+        if ((importance_mask & (1u << i)) > 0u) {
+            total = add_importance_to_total(total, importance);
+            if (1.0 - total.w <= MIN_PROBE_BLEND_WEIGHT) {
+                return total.xyz;
+            }
+            importance = empty_probe_blend_group();
+        }
+        importance = add_diffuse_sh2_contribution_to_importance(importance, index, world_pos, normal_ws);
     }
-    if (shamb::ambient_probe_is_valid()) {
-        return shamb::ambient_probe(normal_ws);
-    }
-    return vec3<f32>(0.0);
+
+    return finalize_diffuse_sh2(total, importance, fallback_index, normal_ws);
 }
 
-fn raw_indirect_specular(
+fn raw_indirect_specular_with_horizon(
     world_pos: vec3<f32>,
     n: vec3<f32>,
+    geometric_n: vec3<f32>,
     v: vec3<f32>,
     perceptual_roughness: f32,
     enabled: bool,
@@ -291,12 +349,14 @@ fn raw_indirect_specular(
     if (!has_indirect_specular(view_layer, enabled)) {
         return vec3<f32>(0.0);
     }
-    return indirect_radiance(world_pos, n, v, perceptual_roughness, view_layer, true);
+    let radiance = indirect_radiance(world_pos, n, v, perceptual_roughness, view_layer, enabled);
+    return radiance * horizon_specular_occlusion(n, geometric_n, v, perceptual_roughness);
 }
 
 fn indirect_specular_with_energy(
     world_pos: vec3<f32>,
     n: vec3<f32>,
+    geometric_n: vec3<f32>,
     v: vec3<f32>,
     perceptual_roughness: f32,
     specular_energy: vec3<f32>,
@@ -305,25 +365,6 @@ fn indirect_specular_with_energy(
     view_layer: u32,
 ) -> vec3<f32> {
     let radiance = indirect_radiance(world_pos, n, v, perceptual_roughness, view_layer, enabled);
-    return radiance * specular_energy * clamp(specular_occlusion, 0.0, 1.0);
-}
-
-fn indirect_specular(
-    world_pos: vec3<f32>,
-    n: vec3<f32>,
-    v: vec3<f32>,
-    perceptual_roughness: f32,
-    f0: vec3<f32>,
-    occlusion: f32,
-    enabled: bool,
-    view_layer: u32,
-) -> vec3<f32> {
-    if (!has_indirect_specular(view_layer, enabled)) {
-        return vec3<f32>(0.0);
-    }
-    let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
-    let dfg = brdf::sample_ibl_dfg_lut(perceptual_roughness, n_dot_v);
-    let energy = brdf::indirect_specular_energy_from_dfg(dfg, f0, true);
-    let specular_occlusion = brdf::specular_ao_lagarde(n_dot_v, occlusion, perceptual_roughness);
-    return indirect_specular_with_energy(world_pos, n, v, perceptual_roughness, energy, specular_occlusion, true, view_layer);
+    let horizon_occlusion = horizon_specular_occlusion(n, geometric_n, v, perceptual_roughness);
+    return radiance * specular_energy * clamp(specular_occlusion, 0.0, 1.0) * horizon_occlusion;
 }

@@ -14,8 +14,11 @@
 //#texture_default _EmissionMap black
 //#texture_default _OcclusionMap white
 //#texture_default _SpecularMap white
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _SpecularColor vec4 1.0 1.0 1.0 0.5
+//#mat_default _AlphaClip float 0.5
 
-#import renderide::material::alpha_clip_sample as acs
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::lighting as plight
@@ -129,15 +132,7 @@ fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, vertex
     if (kw_VCOLOR_ALBEDO()) {
         albedo = albedo * vertex_color;
     }
-    let vertex_alpha = select(1.0, vertex_color.a, kw_VCOLOR_ALBEDO());
-    let clip_alpha = select(
-        albedo.a,
-        mat._Color.a
-            * vertex_alpha
-            * acs::texture_alpha_base_mip(_MainTex, _MainTex_sampler, uv_main),
-        kw_ALBEDOTEX(),
-    );
-    if (kw_ALPHACLIP() && clip_alpha <= mat._AlphaClip) {
+    if (kw_ALPHACLIP() && albedo.a <= mat._AlphaClip) {
         discard;
     }
 
@@ -200,7 +195,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward_transparent_cull_back
+//#pass type=forward name=forward_transparent_cull_back blend=transparent_material zwrite=material(off) cull=back color_mask=material(rgba)
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
@@ -212,13 +207,14 @@ fn fs_forward_base(
     @location(5) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let s = sample_surface(uv0, world_n, world_t, color);
-    let surface = psurf::specular(
+    let surface = psurf::specular_with_geometric_normal(
         s.base_color,
         s.alpha,
         s.f0,
         s.roughness,
         s.occlusion,
         s.normal,
+        world_n,
         s.emission,
     );
     return plight::shade_specular_transparent_clustered(frag_pos.xy, world_pos, view_layer, surface, plight::default_lighting_options());

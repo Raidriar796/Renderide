@@ -258,7 +258,7 @@ fn depth_prepass_pass_for_target(
         return None;
     };
     let snapshots = reflected.snapshot_requirements();
-    let pass_is_opaque_forward = matches!(pass.name, "forward" | "forward_two_sided");
+    let pass_is_opaque_forward = pass.pass_type == crate::materials::PassType::Forward;
     (pass_is_opaque_forward
         && pass.blend.is_none()
         && pass.depth_write

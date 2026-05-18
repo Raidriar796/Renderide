@@ -21,6 +21,9 @@ use openxr as xr;
 use openxr::{CompositionLayerProjection, CompositionLayerProjectionView, SwapchainSubImage};
 use parking_lot::Mutex;
 
+use crate::diagnostics::gpu_flight_recorder::{
+    GpuFlightCallResult, GpuFlightEventKind, GpuFlightOpenXrCall, GpuFlightRecorder,
+};
 use crate::gpu::GpuQueueAccessGate;
 use crate::gpu::driver_thread::BlockingCallWatchdog;
 
@@ -148,7 +151,11 @@ pub fn wait_for_finalize(rx: XrFinalizeReceiver) -> Result<(), RecvTimeoutError>
 ///
 /// Errors are logged with [`logger::warn!`] and recorded in
 /// [`XrFinalizeWork::error_slot`] for the next `wait_frame` to surface.
-pub(super) fn run_xr_finalize(gate: &GpuQueueAccessGate, work: XrFinalizeWork) {
+pub(super) fn run_xr_finalize(
+    gate: &GpuQueueAccessGate,
+    work: XrFinalizeWork,
+    flight_recorder: &GpuFlightRecorder,
+) -> Result<(), xr::sys::Result> {
     profiling::scope!("driver::xr_finalize");
     let XrFinalizeWork {
         kind,
@@ -160,11 +167,25 @@ pub(super) fn run_xr_finalize(gate: &GpuQueueAccessGate, work: XrFinalizeWork) {
         XrFinalizeKind::Projection(mut payload) => {
             drop(payload.imported_color_texture.take());
             let release_res = release_swapchain_image_under_gate(gate, &payload.swapchain);
+            record_openxr_result(
+                flight_recorder,
+                GpuFlightOpenXrCall::ReleaseImage,
+                release_res,
+                None,
+                Some(payload.predicted_display_time.as_nanos()),
+            );
             if let Err(err) = release_res {
                 Err(err)
             } else {
                 let frame_open = Arc::clone(&payload.frame_open);
                 let res = end_frame_projection(gate, &payload);
+                record_openxr_result(
+                    flight_recorder,
+                    GpuFlightOpenXrCall::EndFrameProjection,
+                    res,
+                    None,
+                    Some(payload.predicted_display_time.as_nanos()),
+                );
                 frame_open.store(false, Ordering::Release);
                 res
             }
@@ -183,6 +204,13 @@ pub(super) fn run_xr_finalize(gate: &GpuQueueAccessGate, work: XrFinalizeWork) {
                 predicted_display_time,
                 &shutdown_requested,
             );
+            record_openxr_result(
+                flight_recorder,
+                GpuFlightOpenXrCall::EndFrameEmpty,
+                res,
+                None,
+                Some(predicted_display_time.as_nanos()),
+            );
             frame_open.store(false, Ordering::Release);
             res
         }
@@ -197,6 +225,26 @@ pub(super) fn run_xr_finalize(gate: &GpuQueueAccessGate, work: XrFinalizeWork) {
     }
 
     signal.signal();
+    result
+}
+
+/// Records a fallible OpenXR result into the flight recorder.
+fn record_openxr_result(
+    flight_recorder: &GpuFlightRecorder,
+    call: GpuFlightOpenXrCall,
+    result: Result<(), xr::sys::Result>,
+    image_index: Option<u32>,
+    predicted_display_time_nanos: Option<i64>,
+) {
+    let result = result.map_or_else(GpuFlightCallResult::failed_debug, |()| {
+        GpuFlightCallResult::Ok
+    });
+    flight_recorder.record(GpuFlightEventKind::OpenXrCall {
+        call,
+        result,
+        image_index,
+        predicted_display_time_nanos,
+    });
 }
 
 /// Releases the OpenXR swapchain image under the queue access gate.

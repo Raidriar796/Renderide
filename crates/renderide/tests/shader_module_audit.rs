@@ -236,8 +236,12 @@ fn count_font_atlas_lod_bias_samples(src: &str) -> usize {
 mod camera360;
 #[path = "shader_module_audit/hygiene.rs"]
 mod hygiene;
+#[path = "shader_module_audit/material_defaults.rs"]
+mod material_defaults;
 #[path = "shader_module_audit/pbs.rs"]
 mod pbs;
+#[path = "shader_module_audit/skybox_implicit_defaults.rs"]
+mod skybox_implicit_defaults;
 #[path = "shader_module_audit/tangent_basis.rs"]
 mod tangent_basis;
 #[path = "shader_module_audit/text.rs"]

@@ -6,7 +6,10 @@ use rayon::prelude::*;
 use crate::shared::RenderTransform;
 
 use super::error::SceneError;
-use super::math::{render_transform_has_degenerate_scale, render_transform_to_matrix};
+use super::math::{
+    render_matrix_has_degenerate_scale, render_transform_has_degenerate_scale,
+    render_transform_to_matrix,
+};
 
 /// Node count above which a fully dirty cache routes through the bulk rebuild path.
 const WORLD_BULK_REBUILD_PARALLEL_MIN: usize = 128;
@@ -51,6 +54,12 @@ fn collect_bulk_level_parallel<F>(
     }
 }
 
+/// Returns whether the resolved local or world matrix cannot rasterize triangle geometry.
+#[inline]
+fn transform_matrix_has_degenerate_scale(transform: &RenderTransform, matrix: Mat4) -> bool {
+    render_transform_has_degenerate_scale(transform) || render_matrix_has_degenerate_scale(matrix)
+}
+
 /// Per-space cache: world matrices and incremental recompute bookkeeping.
 #[derive(Debug)]
 pub struct WorldTransformCache {
@@ -62,7 +71,7 @@ pub struct WorldTransformCache {
     pub local_matrices: Vec<Mat4>,
     /// Stale local TRS when pose changed.
     pub local_dirty: Vec<bool>,
-    /// `true` when this node or any ancestor has a raw zero / near-zero object scale axis.
+    /// `true` when this node's effective matrix has fewer than two renderable dimensions.
     pub degenerate_scales: Vec<bool>,
     /// Epoch per node for O(1) cycle detection during upward walks.
     pub(super) visit_epoch: Vec<u32>,
@@ -84,6 +93,10 @@ pub struct WorldTransformCache {
     pub(super) bfs_writes: Vec<(Mat4, bool)>,
     /// Bulk-rebuild scratch: per-worker chunk outputs used to give Tracy one span per Rayon task.
     pub(super) bfs_parallel_writes: Vec<Vec<(Mat4, bool)>>,
+    /// Transform-apply scratch: per-node dirty flags reused across dense transform updates.
+    pub(super) transform_dirty_flags: Vec<bool>,
+    /// Transform-apply scratch: dense list of nodes marked in [`Self::transform_dirty_flags`].
+    pub(super) transform_dirty_indices: Vec<usize>,
 }
 
 impl Default for WorldTransformCache {
@@ -103,6 +116,8 @@ impl Default for WorldTransformCache {
             bfs_cycle_nodes: Vec::new(),
             bfs_writes: Vec::new(),
             bfs_parallel_writes: Vec::new(),
+            transform_dirty_flags: Vec::new(),
+            transform_dirty_indices: Vec::new(),
         }
     }
 }
@@ -330,7 +345,8 @@ impl WorldTransformCache {
             );
             let local = local_matrices[*cycle_id];
             world_matrices[*cycle_id] = local;
-            degenerate_scales[*cycle_id] = render_transform_has_degenerate_scale(&nodes[*cycle_id]);
+            degenerate_scales[*cycle_id] =
+                transform_matrix_has_degenerate_scale(&nodes[*cycle_id], local);
             computed[*cycle_id] = true;
         }
 
@@ -344,14 +360,14 @@ impl WorldTransformCache {
                 collect_bulk_level_parallel(roots, bfs_parallel_writes, bfs_writes, |&i| {
                     (
                         local_ro[i],
-                        render_transform_has_degenerate_scale(&nodes[i]),
+                        transform_matrix_has_degenerate_scale(&nodes[i], local_ro[i]),
                     )
                 });
             } else {
                 bfs_writes.extend(roots.iter().map(|&i| {
                     (
                         local_ro[i],
-                        render_transform_has_degenerate_scale(&nodes[i]),
+                        transform_matrix_has_degenerate_scale(&nodes[i], local_ro[i]),
                     )
                 }));
             }
@@ -378,8 +394,11 @@ impl WorldTransformCache {
                 let parent_world = world_ro[p];
                 let parent_degen = degen_ro[p];
                 let local = local_ro[i];
-                let degen_self = render_transform_has_degenerate_scale(&nodes[i]);
-                (parent_world * local, parent_degen | degen_self)
+                let world = parent_world * local;
+                (
+                    world,
+                    parent_degen || transform_matrix_has_degenerate_scale(&nodes[i], world),
+                )
             };
             if should_parallelize_bulk_level(level.len()) {
                 collect_bulk_level_parallel(level, bfs_parallel_writes, bfs_writes, compute_one);
@@ -465,7 +484,8 @@ impl WorldTransformCache {
                     if !computed[cid] {
                         let local = get_local_matrix(nodes, local_matrices, local_dirty, cid);
                         world_matrices[cid] = local;
-                        degenerate_scales[cid] = render_transform_has_degenerate_scale(&nodes[cid]);
+                        degenerate_scales[cid] =
+                            transform_matrix_has_degenerate_scale(&nodes[cid], local);
                         computed[cid] = true;
                     }
                 }
@@ -480,7 +500,7 @@ impl WorldTransformCache {
                     continue;
                 };
                 let local = get_local_matrix(nodes, local_matrices, local_dirty, top);
-                let degenerate = render_transform_has_degenerate_scale(&nodes[top]);
+                let degenerate = transform_matrix_has_degenerate_scale(&nodes[top], local);
                 world_matrices[top] = local;
                 degenerate_scales[top] = degenerate;
                 computed[top] = true;
@@ -490,7 +510,8 @@ impl WorldTransformCache {
             while let Some(child_id) = stack.pop() {
                 let local = get_local_matrix(nodes, local_matrices, local_dirty, child_id);
                 parent_matrix *= local;
-                parent_degenerate |= render_transform_has_degenerate_scale(&nodes[child_id]);
+                parent_degenerate |=
+                    transform_matrix_has_degenerate_scale(&nodes[child_id], parent_matrix);
                 world_matrices[child_id] = parent_matrix;
                 degenerate_scales[child_id] = parent_degenerate;
                 computed[child_id] = true;
@@ -744,11 +765,41 @@ mod tests {
         assert!(child_world.abs_diff_eq(expected, 1e-5));
     }
 
-    /// Degenerate object scale on a parent marks every child in that transform chain.
+    /// Planar zero scale on a parent remains renderable for the whole transform chain.
     #[test]
-    fn compute_world_matrices_for_space_propagates_degenerate_scale_to_children() {
+    fn compute_world_matrices_for_space_keeps_planar_zero_scale_renderable() {
         let mut collapsed_parent = identity_xform();
         collapsed_parent.scale = Vec3::new(0.0, 1.0, 1.0);
+        let nodes = vec![collapsed_parent, identity_xform()];
+        let parents = vec![-1, 0];
+        let mut cache = WorldTransformCache::default();
+
+        compute_world_matrices_for_space(0, &nodes, &parents, &mut cache).expect("ok");
+
+        assert_eq!(cache.degenerate_scales, vec![false, false]);
+    }
+
+    /// Parent and child planar scales on different axes can still collapse the effective matrix.
+    #[test]
+    fn compute_world_matrices_for_space_marks_effective_line_scale_degenerate() {
+        let mut collapsed_parent = identity_xform();
+        collapsed_parent.scale = Vec3::new(0.0, 1.0, 1.0);
+        let mut collapsed_child = identity_xform();
+        collapsed_child.scale = Vec3::new(1.0, 0.0, 1.0);
+        let nodes = vec![collapsed_parent, collapsed_child];
+        let parents = vec![-1, 0];
+        let mut cache = WorldTransformCache::default();
+
+        compute_world_matrices_for_space(0, &nodes, &parents, &mut cache).expect("ok");
+
+        assert_eq!(cache.degenerate_scales, vec![false, true]);
+    }
+
+    /// Line-scale collapse on a parent marks every child in that transform chain.
+    #[test]
+    fn compute_world_matrices_for_space_propagates_line_scale_to_children() {
+        let mut collapsed_parent = identity_xform();
+        collapsed_parent.scale = Vec3::new(0.0, 0.0, 1.0);
         let nodes = vec![collapsed_parent, identity_xform()];
         let parents = vec![-1, 0];
         let mut cache = WorldTransformCache::default();

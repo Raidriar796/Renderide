@@ -110,6 +110,7 @@ fn resolve_depth_attachment<'a>(
     sample_count: u32,
     ctx: &RasterPassCtx<'_, '_>,
 ) -> Result<Option<wgpu::RenderPassDepthStencilAttachment<'a>>, GraphExecuteError> {
+    profiling::scope!("graph::raster::resolve_depth_attachment");
     let Some(depth) = &template.depth_stencil_attachment else {
         return Ok(None);
     };
@@ -141,10 +142,12 @@ pub(in crate::render_graph::compiled) fn execute_graph_raster_pass_node(
     encoder: &mut wgpu::CommandEncoder,
     ctx: &mut RasterPassCtx<'_, '_>,
 ) -> Result<(), GraphExecuteError> {
-    if !pass
-        .should_record_raster(ctx)
-        .map_err(GraphExecuteError::Pass)?
-    {
+    let should_record = {
+        profiling::scope!("graph::raster::should_record");
+        pass.should_record_raster(ctx)
+            .map_err(GraphExecuteError::Pass)?
+    };
+    if !should_record {
         return Ok(());
     }
 

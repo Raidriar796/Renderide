@@ -159,16 +159,63 @@ impl SceneSnapshotKind {
     }
 }
 
+/// Depth and color snapshots for one texture layout.
+struct SceneSnapshotLayoutTargets {
+    /// Depth snapshot for this layout.
+    depth: SceneSnapshotTexture,
+    /// Color snapshot for this layout.
+    color: SceneSnapshotTexture,
+}
+
+impl SceneSnapshotLayoutTargets {
+    /// Allocates the depth and color snapshots for `layout`.
+    fn new(
+        device: &wgpu::Device,
+        layout: SceneSnapshotLayout,
+        depth_format: wgpu::TextureFormat,
+        color_format: wgpu::TextureFormat,
+    ) -> Self {
+        Self {
+            depth: SceneSnapshotTexture::new(
+                device,
+                SceneSnapshotKind::Depth,
+                layout,
+                (1, 1),
+                depth_format,
+            ),
+            color: SceneSnapshotTexture::new(
+                device,
+                SceneSnapshotKind::Color,
+                layout,
+                (1, 1),
+                color_format,
+            ),
+        }
+    }
+
+    /// Returns the target for `kind`.
+    fn target(&self, kind: SceneSnapshotKind) -> &SceneSnapshotTexture {
+        match kind {
+            SceneSnapshotKind::Depth => &self.depth,
+            SceneSnapshotKind::Color => &self.color,
+        }
+    }
+
+    /// Returns the mutable target for `kind`.
+    fn target_mut(&mut self, kind: SceneSnapshotKind) -> &mut SceneSnapshotTexture {
+        match kind {
+            SceneSnapshotKind::Depth => &mut self.depth,
+            SceneSnapshotKind::Color => &mut self.color,
+        }
+    }
+}
+
 /// Owns mono/stereo depth and color snapshots plus their shared color sampler.
 pub(super) struct SceneSnapshotSet {
-    /// Single-view depth snapshot.
-    depth_2d: SceneSnapshotTexture,
-    /// Stereo-array depth snapshot.
-    depth_array: SceneSnapshotTexture,
-    /// Single-view color snapshot.
-    color_2d: SceneSnapshotTexture,
-    /// Stereo-array color snapshot.
-    color_array: SceneSnapshotTexture,
+    /// Single-view depth and color snapshots.
+    mono: SceneSnapshotLayoutTargets,
+    /// Stereo-array depth and color snapshots.
+    stereo: SceneSnapshotLayoutTargets,
     /// Shared color sampler.
     color_sampler: wgpu::Sampler,
 }
@@ -191,32 +238,16 @@ impl SceneSnapshotSet {
             ..Default::default()
         });
         Self {
-            depth_2d: SceneSnapshotTexture::new(
+            mono: SceneSnapshotLayoutTargets::new(
                 device,
-                SceneSnapshotKind::Depth,
                 SceneSnapshotLayout::Mono2d,
-                (1, 1),
                 depth_format,
-            ),
-            depth_array: SceneSnapshotTexture::new(
-                device,
-                SceneSnapshotKind::Depth,
-                SceneSnapshotLayout::StereoArray,
-                (1, 1),
-                depth_format,
-            ),
-            color_2d: SceneSnapshotTexture::new(
-                device,
-                SceneSnapshotKind::Color,
-                SceneSnapshotLayout::Mono2d,
-                (1, 1),
                 color_format,
             ),
-            color_array: SceneSnapshotTexture::new(
+            stereo: SceneSnapshotLayoutTargets::new(
                 device,
-                SceneSnapshotKind::Color,
                 SceneSnapshotLayout::StereoArray,
-                (1, 1),
+                depth_format,
                 color_format,
             ),
             color_sampler,
@@ -226,10 +257,10 @@ impl SceneSnapshotSet {
     /// Returns the four snapshot views and color sampler used by `@group(0)`.
     pub(super) fn views(&self) -> FrameSceneSnapshotTextureViews<'_> {
         FrameSceneSnapshotTextureViews {
-            scene_depth_2d: &self.depth_2d.view,
-            scene_depth_array: &self.depth_array.view,
-            scene_color_2d: &self.color_2d.view,
-            scene_color_array: &self.color_array.view,
+            scene_depth_2d: &self.mono.depth.view,
+            scene_depth_array: &self.stereo.depth.view,
+            scene_color_2d: &self.mono.color.view,
+            scene_color_array: &self.stereo.color.view,
             scene_color_sampler: &self.color_sampler,
         }
     }
@@ -256,7 +287,7 @@ impl SceneSnapshotSet {
             );
             return false;
         }
-        let target = self.target_mut(kind, layout);
+        let target = self.targets_mut(layout).target_mut(kind);
         if target.matches(want, format) {
             return false;
         }
@@ -276,7 +307,7 @@ impl SceneSnapshotSet {
         let width = viewport.0.max(1);
         let height = viewport.1.max(1);
         let format = source.format();
-        let target = self.target(kind, layout);
+        let target = self.targets(layout).target(kind);
         if !target.matches((width, height), format) {
             logger::warn!(
                 "scene {} snapshot copy: {} target not pre-synced for {}x{} {:?}; skipping copy",
@@ -311,31 +342,19 @@ impl SceneSnapshotSet {
         true
     }
 
-    /// Returns an immutable target reference.
-    fn target(
-        &self,
-        kind: SceneSnapshotKind,
-        layout: SceneSnapshotLayout,
-    ) -> &SceneSnapshotTexture {
-        match (kind, layout) {
-            (SceneSnapshotKind::Depth, SceneSnapshotLayout::Mono2d) => &self.depth_2d,
-            (SceneSnapshotKind::Depth, SceneSnapshotLayout::StereoArray) => &self.depth_array,
-            (SceneSnapshotKind::Color, SceneSnapshotLayout::Mono2d) => &self.color_2d,
-            (SceneSnapshotKind::Color, SceneSnapshotLayout::StereoArray) => &self.color_array,
+    /// Returns immutable targets for `layout`.
+    fn targets(&self, layout: SceneSnapshotLayout) -> &SceneSnapshotLayoutTargets {
+        match layout {
+            SceneSnapshotLayout::Mono2d => &self.mono,
+            SceneSnapshotLayout::StereoArray => &self.stereo,
         }
     }
 
-    /// Returns a mutable target reference.
-    fn target_mut(
-        &mut self,
-        kind: SceneSnapshotKind,
-        layout: SceneSnapshotLayout,
-    ) -> &mut SceneSnapshotTexture {
-        match (kind, layout) {
-            (SceneSnapshotKind::Depth, SceneSnapshotLayout::Mono2d) => &mut self.depth_2d,
-            (SceneSnapshotKind::Depth, SceneSnapshotLayout::StereoArray) => &mut self.depth_array,
-            (SceneSnapshotKind::Color, SceneSnapshotLayout::Mono2d) => &mut self.color_2d,
-            (SceneSnapshotKind::Color, SceneSnapshotLayout::StereoArray) => &mut self.color_array,
+    /// Returns mutable targets for `layout`.
+    fn targets_mut(&mut self, layout: SceneSnapshotLayout) -> &mut SceneSnapshotLayoutTargets {
+        match layout {
+            SceneSnapshotLayout::Mono2d => &mut self.mono,
+            SceneSnapshotLayout::StereoArray => &mut self.stereo,
         }
     }
 }

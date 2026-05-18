@@ -13,6 +13,11 @@
 //#texture_default _EmissionMap black
 //#texture_default _OcclusionMap white
 //#texture_default _MetallicMap black
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _RimColor vec4 1.0 0.0 0.0 1.0
+//#mat_default _Glossiness float 0.5
+//#mat_default _RimPower float 3.0
 
 #import renderide::frame::globals as rg
 #import renderide::material::fresnel as mf
@@ -92,7 +97,7 @@ fn vs_main(
 /// Depth-only prepass: writes nothing to color (`write=none`) but populates depth so the alpha-blended
 /// main pass below can self-occlude. Touches every binding so the prepass pipeline's auto-derived
 /// bind-group layout matches the forward pass and the same material bind group binds for both.
-//#pass depth_prepass
+//#pass type=depth_prepass blend=off zwrite=on ztest=material_froox(main) color_mask=0 cull=material(back) offset=material(0,0) stencil=material
 @fragment
 fn fs_depth_only(
     @location(0) world_pos: vec3<f32>,
@@ -115,7 +120,7 @@ fn fs_depth_only(
     return rg::retain_globals_additive(vec4<f32>(touch, touch, touch, 0.0));
 }
 
-//#pass forward_transparent
+//#pass type=forward name=forward_transparent_cull_back blend=transparent_material zwrite=material(off) cull=back color_mask=material(rgba)
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
@@ -164,7 +169,16 @@ fn fs_main(
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
     let rim = mf::rim_factor(n, view_dir, mat._RimPower);
     let rim_emission = mat._RimColor.rgb * rim;
-    let surface = psurf::metallic(base_color, alpha, metallic, roughness, occlusion, n, emission + rim_emission);
+    let surface = psurf::metallic_with_geometric_normal(
+        base_color,
+        alpha,
+        metallic,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        emission + rim_emission,
+    );
     return plight::shade_metallic_transparent_clustered(
         frag_pos.xy,
         world_pos,

@@ -9,7 +9,8 @@ use super::super::embedded_material_bind_error::EmbeddedMaterialBindError;
 use super::super::layout::StemMaterialLayout;
 use super::super::texture_pools::EmbeddedTexturePools;
 use super::super::uniform_pack::{
-    UniformPackTextureContext, build_embedded_uniform_bytes_with_value_spaces,
+    MaterialUniformPackMetadata, UniformPackTextureContext,
+    build_embedded_uniform_bytes_with_material_defaults,
 };
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
@@ -385,10 +386,13 @@ impl EmbeddedMaterialBindResources {
             arena.resolve_binding(*uniform_key, uniform_size, mutation_gen, texture_state_sig)?;
         if needs_write {
             profiling::scope!("materials::embedded_uniform_arena_write");
-            let uniform_bytes = build_embedded_uniform_bytes_with_value_spaces(
+            let uniform_bytes = build_embedded_uniform_bytes_with_material_defaults(
                 &layout.reflected,
                 layout.ids.as_ref(),
-                &layout.uniform_value_spaces,
+                &MaterialUniformPackMetadata {
+                    value_spaces: &layout.uniform_value_spaces,
+                    material_defaults: &layout.uniform_default_by_field,
+                },
                 store,
                 lookup,
                 &tex_ctx,

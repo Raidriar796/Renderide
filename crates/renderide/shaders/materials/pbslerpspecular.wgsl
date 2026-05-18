@@ -15,6 +15,12 @@
 //#texture_default _Occlusion1 white
 //#texture_default _SpecularMap white
 //#texture_default _SpecularMap1 white
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _Color1 vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _NormalScale1 float 1.0
+//#mat_default _SpecularColor vec4 1.0 1.0 1.0 0.5
+//#mat_default _SpecularColor1 vec4 1.0 1.0 1.0 0.5
 
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
@@ -22,7 +28,6 @@
 #import renderide::pbs::normal as pnorm
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
-#import renderide::material::alpha_clip_sample as acs
 #import renderide::core::uv as uvu
 #import renderide::core::normal_decode as nd
 
@@ -39,7 +44,7 @@ struct PbsLerpSpecularMaterial {
     _Lerp: f32,
     _NormalScale: f32,
     _NormalScale1: f32,
-    _AlphaClip: f32,
+    _Cutoff: f32,
     _RenderideVariantBits: u32,
 }
 
@@ -142,7 +147,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
@@ -160,19 +165,13 @@ fn fs_main(
 
     var c0 = mat._Color;
     var c1 = mat._Color1;
-    var clip_a = mix(mat._Color.a, mat._Color1.a, l);
     if (pbs_kw(PBSLERPSPECULAR_KW_ALBEDOTEX)) {
         c0 = c0 * textureSample(_MainTex, _MainTex_sampler, uv_main0);
         c1 = c1 * textureSample(_MainTex1, _MainTex1_sampler, uv_main1);
-        clip_a = mix(
-            mat._Color.a * acs::texture_alpha_base_mip(_MainTex, _MainTex_sampler, uv_main0),
-            mat._Color1.a * acs::texture_alpha_base_mip(_MainTex1, _MainTex1_sampler, uv_main1),
-            l,
-        );
     }
 
     let c = mix(c0, c1, l);
-    if (pbs_kw(PBSLERPSPECULAR_KW_ALPHACLIP) && clip_a <= mat._AlphaClip) {
+    if (pbs_kw(PBSLERPSPECULAR_KW_ALPHACLIP) && c.a <= mat._Cutoff) {
         discard;
     }
 
@@ -214,7 +213,16 @@ fn fs_main(
 
     let n = sample_normal_world(uv_main0, uv_main1, world_n, world_t, front_facing, l);
 
-    let surface = psurf::specular(base_color, alpha, f0, roughness, occlusion, n, emission);
+    let surface = psurf::specular_with_geometric_normal(
+        base_color,
+        alpha,
+        f0,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        emission,
+    );
     let color = plight::shade_specular_clustered(
         frag_pos.xy,
         world_pos,

@@ -22,7 +22,7 @@
 @group(0) @binding(6) var scene_color: texture_2d<f32>;
 @group(0) @binding(7) var scene_color_array: texture_2d_array<f32>;
 @group(0) @binding(8) var scene_color_sampler: sampler;
-@group(0) @binding(9) var reflection_probe_specular: texture_cube_array<f32>;
+@group(0) @binding(9) var reflection_probe_specular: texture_2d_array<f32>;
 @group(0) @binding(10) var reflection_probe_specular_sampler: sampler;
 @group(0) @binding(11) var ibl_dfg_lut: texture_2d<f32>;
 @group(0) @binding(12) var<storage, read> reflection_probes: array<ft::GpuReflectionProbe>;
@@ -74,6 +74,15 @@ fn projection_flags_for_view(view_layer: u32) -> u32 {
     }
 #endif
     return frame.frame_tail.y;
+}
+
+/// Raster sample count for the current frame target.
+fn frame_sample_count() -> u32 {
+    let sample_count = (frame.frame_tail.w & ft::FRAME_TAIL_SAMPLE_COUNT_MASK) >> ft::FRAME_TAIL_SAMPLE_COUNT_SHIFT;
+    if (sample_count == 2u || sample_count == 4u || sample_count == 8u) {
+        return sample_count;
+    }
+    return 1u;
 }
 
 /// Returns true when the current view layer is orthographic.

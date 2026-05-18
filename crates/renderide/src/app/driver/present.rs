@@ -207,7 +207,7 @@ fn encode_debug_hud_overlay_via_backend(
     let device = gpu.device().as_ref();
     let extent = gpu.surface_extent_px();
     let queue = gpu.queue().as_ref();
-    backend.encode_debug_hud_overlay(device, queue, encoder, view, extent)
+    backend.encode_debug_hud_overlay(device, queue, encoder, view, extent, gpu.gpu_profiler())
 }
 
 /// Tests bit `bit_index` (zero-based) on a [`BlitToDisplayState::flags`] byte.

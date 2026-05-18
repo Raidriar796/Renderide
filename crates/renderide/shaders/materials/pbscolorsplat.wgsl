@@ -24,6 +24,16 @@
 //#texture_default _PackedEmissionMap white
 //#texture_default _MetallicGloss01 black
 //#texture_default _MetallicGloss23 black
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _Color1 vec4 1.0 1.0 1.0 1.0
+//#mat_default _Color2 vec4 1.0 1.0 1.0 1.0
+//#mat_default _Color3 vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _NormalScale1 float 1.0
+//#mat_default _NormalScale2 float 1.0
+//#mat_default _NormalScale3 float 1.0
+//#mat_default _Glossiness float 0.5
+//#mat_default _HeightTransitionRange float 0.1
 
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
@@ -239,7 +249,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
@@ -250,13 +260,14 @@ fn fs_forward_base(
     @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let s = sample_surface(uv0, world_n, world_t);
-    let surface = psurf::metallic(
+    let surface = psurf::metallic_with_geometric_normal(
         s.base_color,
         s.alpha,
         s.metallic,
         s.roughness,
         1.0,
         s.normal,
+        world_n,
         s.emission,
     );
     return vec4<f32>(

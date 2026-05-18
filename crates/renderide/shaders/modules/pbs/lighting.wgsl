@@ -75,13 +75,14 @@ fn direct_metallic_clustered(
                 s.normal,
                 view_dir,
                 aa_roughness,
+                s.roughness,
                 s.metallic,
                 s.base_color,
                 specular_color,
                 energy_compensation,
             );
         } else {
-            lo = lo + brdf::diffuse_only_metallic(light, world_pos, s.normal, s.base_color, s.metallic);
+            lo = lo + brdf::diffuse_only_metallic(light, world_pos, s.normal, view_dir, s.roughness, s.base_color, s.metallic);
         }
     }
     return lo;
@@ -120,6 +121,7 @@ fn direct_specular_clustered(
                 s.normal,
                 view_dir,
                 aa_roughness,
+                s.roughness,
                 s.base_color,
                 s.specular_color,
                 s.one_minus_reflectivity,
@@ -130,6 +132,8 @@ fn direct_specular_clustered(
                 light,
                 world_pos,
                 s.normal,
+                view_dir,
+                s.roughness,
                 s.base_color,
                 s.one_minus_reflectivity,
             );
@@ -151,6 +155,7 @@ fn shade_metallic_clustered(
     let direct_roughness = brdf::direct_perceptual_roughness(s.roughness);
     let direct_dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);
     let energy_compensation = brdf::energy_compensation_from_dfg(direct_dfg, specular_color);
+    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
     let direct = direct_metallic_clustered(
         frag_xy,
         world_pos,
@@ -163,9 +168,10 @@ fn shade_metallic_clustered(
     );
     let indirect_specular_enabled =
         rprobe::has_indirect_specular(view_layer, options.glossy_reflections_enabled);
-    let indirect_dfg = brdf::sample_ibl_dfg_lut(s.roughness, n_dot_v);
+    let indirect_dfg = brdf::sample_ibl_dfg_lut(indirect_roughness, n_dot_v);
     let specular_energy = brdf::indirect_specular_energy_from_dfg(indirect_dfg, specular_color, indirect_specular_enabled);
-    let specular_occlusion = brdf::specular_ao_lagarde(n_dot_v, s.occlusion, s.roughness);
+    let specular_visibility =
+        brdf::indirect_specular_visibility(n_dot_v, s.occlusion, indirect_roughness, specular_color);
     let ambient_probe = rprobe::indirect_diffuse(world_pos, s.normal, view_layer, options.include_directional);
     let ambient = brdf::indirect_diffuse_metallic(
         ambient_probe,
@@ -178,10 +184,11 @@ fn shade_metallic_clustered(
     let indirect_specular = rprobe::indirect_specular_with_energy(
         world_pos,
         s.normal,
+        s.geometric_normal,
         view_dir,
-        s.roughness,
-        specular_energy,
-        specular_occlusion,
+        indirect_roughness,
+        specular_energy * specular_visibility,
+        1.0,
         indirect_specular_enabled,
         view_layer,
     );
@@ -198,6 +205,7 @@ fn premultiplied_metallic_surface(s: surface::MetallicSurface) -> surface::Metal
         s.roughness,
         s.occlusion,
         s.normal,
+        s.geometric_normal,
         s.emission,
     );
 }
@@ -216,6 +224,7 @@ fn shade_metallic_transparent_clustered(
     let direct_roughness = brdf::direct_perceptual_roughness(s.roughness);
     let direct_dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);
     let energy_compensation = brdf::energy_compensation_from_dfg(direct_dfg, specular_color);
+    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
     let direct = direct_metallic_clustered(
         frag_xy,
         world_pos,
@@ -228,9 +237,10 @@ fn shade_metallic_transparent_clustered(
     );
     let indirect_specular_enabled =
         rprobe::has_indirect_specular(view_layer, options.glossy_reflections_enabled);
-    let indirect_dfg = brdf::sample_ibl_dfg_lut(s.roughness, n_dot_v);
+    let indirect_dfg = brdf::sample_ibl_dfg_lut(indirect_roughness, n_dot_v);
     let specular_energy = brdf::indirect_specular_energy_from_dfg(indirect_dfg, specular_color, indirect_specular_enabled);
-    let specular_occlusion = brdf::specular_ao_lagarde(n_dot_v, s.occlusion, s.roughness);
+    let specular_visibility =
+        brdf::indirect_specular_visibility(n_dot_v, s.occlusion, indirect_roughness, specular_color);
     let ambient_probe = rprobe::indirect_diffuse(world_pos, s.normal, view_layer, options.include_directional);
     let ambient = brdf::indirect_diffuse_metallic(
         ambient_probe,
@@ -243,10 +253,11 @@ fn shade_metallic_transparent_clustered(
     let indirect_specular = rprobe::indirect_specular_with_energy(
         world_pos,
         s.normal,
+        s.geometric_normal,
         view_dir,
-        s.roughness,
-        specular_energy,
-        specular_occlusion,
+        indirect_roughness,
+        specular_energy * specular_visibility,
+        1.0,
         indirect_specular_enabled,
         view_layer,
     );
@@ -270,6 +281,7 @@ fn shade_specular_clustered(
     let direct_roughness = brdf::direct_perceptual_roughness(s.roughness);
     let direct_dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);
     let energy_compensation = brdf::energy_compensation_from_dfg(direct_dfg, s.specular_color);
+    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
     let direct = direct_specular_clustered(
         frag_xy,
         world_pos,
@@ -281,9 +293,10 @@ fn shade_specular_clustered(
     );
     let indirect_specular_enabled =
         rprobe::has_indirect_specular(view_layer, options.glossy_reflections_enabled);
-    let indirect_dfg = brdf::sample_ibl_dfg_lut(s.roughness, n_dot_v);
+    let indirect_dfg = brdf::sample_ibl_dfg_lut(indirect_roughness, n_dot_v);
     let specular_energy = brdf::indirect_specular_energy_from_dfg(indirect_dfg, s.specular_color, indirect_specular_enabled);
-    let specular_occlusion = brdf::specular_ao_lagarde(n_dot_v, s.occlusion, s.roughness);
+    let specular_visibility =
+        brdf::indirect_specular_visibility(n_dot_v, s.occlusion, indirect_roughness, s.specular_color);
     let ambient_probe = rprobe::indirect_diffuse(world_pos, s.normal, view_layer, options.include_directional);
     let ambient = brdf::indirect_diffuse_specular(
         ambient_probe,
@@ -296,10 +309,11 @@ fn shade_specular_clustered(
     let indirect_specular = rprobe::indirect_specular_with_energy(
         world_pos,
         s.normal,
+        s.geometric_normal,
         view_dir,
-        s.roughness,
-        specular_energy,
-        specular_occlusion,
+        indirect_roughness,
+        specular_energy * specular_visibility,
+        1.0,
         indirect_specular_enabled,
         view_layer,
     );
@@ -317,6 +331,7 @@ fn premultiplied_specular_surface(s: surface::SpecularSurface) -> surface::Specu
         s.one_minus_reflectivity,
         s.occlusion,
         s.normal,
+        s.geometric_normal,
         s.emission,
     );
 }
@@ -334,6 +349,7 @@ fn shade_specular_transparent_clustered(
     let direct_roughness = brdf::direct_perceptual_roughness(s.roughness);
     let direct_dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);
     let energy_compensation = brdf::energy_compensation_from_dfg(direct_dfg, s.specular_color);
+    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
     let direct = direct_specular_clustered(
         frag_xy,
         world_pos,
@@ -345,9 +361,10 @@ fn shade_specular_transparent_clustered(
     );
     let indirect_specular_enabled =
         rprobe::has_indirect_specular(view_layer, options.glossy_reflections_enabled);
-    let indirect_dfg = brdf::sample_ibl_dfg_lut(s.roughness, n_dot_v);
+    let indirect_dfg = brdf::sample_ibl_dfg_lut(indirect_roughness, n_dot_v);
     let specular_energy = brdf::indirect_specular_energy_from_dfg(indirect_dfg, s.specular_color, indirect_specular_enabled);
-    let specular_occlusion = brdf::specular_ao_lagarde(n_dot_v, s.occlusion, s.roughness);
+    let specular_visibility =
+        brdf::indirect_specular_visibility(n_dot_v, s.occlusion, indirect_roughness, s.specular_color);
     let ambient_probe = rprobe::indirect_diffuse(world_pos, s.normal, view_layer, options.include_directional);
     let ambient = brdf::indirect_diffuse_specular(
         ambient_probe,
@@ -360,10 +377,11 @@ fn shade_specular_transparent_clustered(
     let indirect_specular = rprobe::indirect_specular_with_energy(
         world_pos,
         s.normal,
+        s.geometric_normal,
         view_dir,
-        s.roughness,
-        specular_energy,
-        specular_occlusion,
+        indirect_roughness,
+        specular_energy * specular_visibility,
+        1.0,
         indirect_specular_enabled,
         view_layer,
     );

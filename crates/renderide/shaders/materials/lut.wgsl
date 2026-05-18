@@ -59,7 +59,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward_filter
+//#pass type=forward name=forward_filter blend=material_filter
 @fragment
 fn fs_main(in: fv::RectVertexOutput) -> @location(0) vec4<f32> {
     fc::discard_rect_if_enabled(in.obj_xy, mat._Rect, kw_RECTCLIP());

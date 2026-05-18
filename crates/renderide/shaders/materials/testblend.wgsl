@@ -6,6 +6,10 @@
 
 //#texture_default _MainTex white
 //#texture_default _MainTex2 white
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _CutOff float 0.5
+//#mat_default _Glossiness float 0.5
+//#mat_default _Lerp float 0.5
 
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv
@@ -95,13 +99,14 @@ fn shade(
     let smoothness = clamp(mat._Glossiness, 0.0, 1.0);
     let roughness = psamp::roughness_from_smoothness(smoothness);
     let n = normalize(world_n);
-    let surface = psurf::metallic(
+    let surface = psurf::metallic_with_geometric_normal(
         base_color,
         1.0,
         metallic,
         roughness,
         1.0,
         n,
+        world_n,
         vec3<f32>(0.0),
     );
     // Touch the renderer-reserved uniform so naga-oil keeps the binding live across import pruning.
@@ -118,7 +123,7 @@ fn shade(
     );
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

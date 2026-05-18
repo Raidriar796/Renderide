@@ -68,6 +68,33 @@ impl<'a> ChainCursor<'a> {
         }
     }
 
+    /// Ensures the next host array payload is contained in one descriptor, matching the host reader.
+    fn ensure_array_capacity<L: MaterialBatchBlobLoader + ?Sized>(
+        &mut self,
+        loader: &mut L,
+        byte_len: usize,
+    ) -> bool {
+        if byte_len == 0 {
+            return true;
+        }
+        if self.data.is_empty() && !self.advance(loader) {
+            return false;
+        }
+        if self
+            .offset
+            .checked_add(byte_len)
+            .is_some_and(|end| end <= self.data.len())
+        {
+            return true;
+        }
+        if !self.advance(loader) {
+            return false;
+        }
+        self.offset
+            .checked_add(byte_len)
+            .is_some_and(|end| end <= self.data.len())
+    }
+
     /// Reads the next `T` from the stream, advancing the cursor on success.
     pub(super) fn next<T: Pod + Zeroable, L: MaterialBatchBlobLoader + ?Sized>(
         &mut self,
@@ -84,6 +111,34 @@ impl<'a> ChainCursor<'a> {
         let v = bytemuck::pod_read_unaligned(slice);
         self.offset += elem_size;
         Some(v)
+    }
+
+    /// Reads the next length-prefixed-array payload, retaining only the requested prefix.
+    pub(super) fn next_array_prefix<T: Pod + Zeroable, L: MaterialBatchBlobLoader + ?Sized>(
+        &mut self,
+        loader: &mut L,
+        len: usize,
+        prefix_len: usize,
+    ) -> Option<Vec<T>> {
+        let elem_size = size_of::<T>();
+        let byte_len = len.checked_mul(elem_size)?;
+        let retained_len = len.min(prefix_len);
+        if elem_size == 0 {
+            return Some(vec![T::zeroed(); retained_len]);
+        }
+        if !self.ensure_array_capacity(loader, byte_len) {
+            return None;
+        }
+
+        let mut out = Vec::with_capacity(retained_len);
+        let mut elem_offset = self.offset;
+        for _ in 0..retained_len {
+            let slice = &self.data[elem_offset..elem_offset + elem_size];
+            out.push(bytemuck::pod_read_unaligned(slice));
+            elem_offset += elem_size;
+        }
+        self.offset = self.offset.checked_add(byte_len)?;
+        Some(out)
     }
 
     /// Reads the next [`MemoryPackable`] row of `host_row_bytes` size.

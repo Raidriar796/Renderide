@@ -16,6 +16,10 @@
 
 //#texture_default _MainTex white
 //#texture_default _MaskTex white
+//#mat_default _OverlayTint vec4 1.0 1.0 1.0 0.5
+//#mat_default _Rect vec4 0.0 0.0 1.0 1.0
+//#mat_default _Tint vec4 1.0 1.0 1.0 1.0
+//#mat_default _Cutoff float 0.98
 
 #import renderide::core::texture_sampling as ts
 #import renderide::frame::globals as rg
@@ -101,7 +105,7 @@ fn vs_main(
     return out;
 }
 
-//#pass forward
+//#pass type=forward name=forward_filter blend=material_filter
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (uirc::should_clip_rect_kw(in.obj_xy, mat._Rect, ui_unlit_kw(UIUNLIT_KW_RECTCLIP))) {

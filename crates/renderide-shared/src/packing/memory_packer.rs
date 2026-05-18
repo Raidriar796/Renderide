@@ -9,19 +9,16 @@ use super::memory_pack_error::MemoryPackError;
 use super::memory_packable::MemoryPackable;
 use super::polymorphic_memory_packable_entity::PolymorphicEncode;
 
-/// Sequential binary writer for IPC buffers (writes `Pod` values as byte slices; works for unaligned buffers).
+/// Sequential binary writer for IPC buffers.
 ///
-/// Buffer overflow used to `panic!` via `assert!`; runtime packing now reports recoverable
-/// overflow instead. The packer tracks the overflow as state: subsequent writes silently no-op so
-/// the trait-shaped `pack(&mut self, packer)` API used by both hand-written code and the
-/// `SharedTypeGenerator`-emitted `pack` methods does not need to thread `Result` through every
-/// write site. After encoding, callers must invoke [`MemoryPacker::into_result`] (or check
-/// [`MemoryPacker::had_overflow`]) to determine whether the message is complete; an incomplete
-/// message must be discarded rather than transmitted because the trailing fields are missing.
+/// Values are appended to the backing byte slice in host wire order. Overflow is captured as
+/// packer state, and later writes are skipped so generated and hand-written `pack` implementations
+/// can keep their infallible signature. Callers must finish an encode by checking
+/// [`MemoryPacker::into_result`] or [`MemoryPacker::had_overflow`] and discard incomplete messages.
 pub struct MemoryPacker<'a> {
     /// Remaining unwritten tail of the backing slice.
     buffer: &'a mut [u8],
-    /// Overflow state: `None` until the first failed write, then the captured error.
+    /// First failed write, retained until the caller inspects the encode result.
     overflow: Option<MemoryPackError>,
 }
 
@@ -70,34 +67,50 @@ impl<'a> MemoryPacker<'a> {
         self.write(&u8::from(value));
     }
 
-    /// Writes a plain data value with potentially unaligned storage (safe for shared-memory views).
+    /// Writes a plain data value with potentially unaligned storage.
     ///
-    /// Uses [`std::mem::replace`] so the slice can be split after [`bytemuck::bytes_of`] without
-    /// borrowing `value` for the lifetime of the backing buffer.
-    ///
-    /// On buffer overflow this records the failure on the packer (see
-    /// [`MemoryPacker::had_overflow`] / [`MemoryPacker::into_result`]) and silently skips the
-    /// write so the cursor remains at the prior position; callers must verify the result after
-    /// encoding instead of relying on a panic.
+    /// On overflow this records the first failed reservation and leaves the write cursor
+    /// unchanged. Later writes are skipped until the caller inspects the result.
     pub fn write<T: Pod>(&mut self, value: &T) {
-        if self.overflow.is_some() {
-            return;
+        if let Some(dst) = self.reserve_pod_bytes::<T>() {
+            dst.copy_from_slice(bytemuck::bytes_of(value));
         }
+    }
+
+    /// Reserves space for one plain data value and advances the cursor on success.
+    fn reserve_pod_bytes<T: Pod>(&mut self) -> Option<&mut [u8]> {
         let byte_len = size_of::<T>();
-        if byte_len > self.buffer.len() {
-            self.overflow = Some(MemoryPackError::BufferTooSmall {
-                ty: short_type_name::<T>(),
-                needed: byte_len,
-                remaining: self.buffer.len(),
-            });
-            return;
+        self.reserve_bytes(byte_len, short_type_name::<T>())
+    }
+
+    /// Reserves `byte_len` bytes and advances the cursor on success.
+    fn reserve_bytes(&mut self, byte_len: usize, ty: &'static str) -> Option<&mut [u8]> {
+        if self.overflow.is_some() {
+            return None;
         }
-        let bytes = bytemuck::bytes_of(value);
+        if byte_len > self.buffer.len() {
+            self.record_overflow(ty, byte_len);
+            return None;
+        }
+        Some(self.take_prefix(byte_len))
+    }
+
+    /// Records the first failed write reservation.
+    fn record_overflow(&mut self, ty: &'static str, needed: usize) {
+        self.overflow = Some(MemoryPackError::BufferTooSmall {
+            ty,
+            needed,
+            remaining: self.buffer.len(),
+        });
+    }
+
+    /// Splits `byte_len` bytes from the front of the remaining buffer.
+    fn take_prefix(&mut self, byte_len: usize) -> &mut [u8] {
         let empty_tail: &mut [u8] = &mut [];
         let buf = std::mem::replace(&mut self.buffer, empty_tail);
         let (head, tail) = buf.split_at_mut(byte_len);
-        head.copy_from_slice(bytes);
         self.buffer = tail;
+        head
     }
 
     /// UTF-16 code units (two-byte wchar layout): `i32` length, then each `u16`. Length `-1` means null.
@@ -128,7 +141,7 @@ impl<'a> MemoryPacker<'a> {
 
     /// Packs eight booleans into one byte (bit0 = LSB).
     ///
-    /// `SharedTypeGenerator` emits `packer.write_packed_bools_array([...])` for packed-bool fields in the generated shared types.
+    /// Generated shared types call this for fields stored as packed boolean bytes.
     pub fn write_packed_bools_array(&mut self, bits: [bool; 8]) {
         let byte = u8::from(bits[0])
             | u8::from(bits[1]) << 1
@@ -293,13 +306,30 @@ mod tests {
     fn writes_after_overflow_are_no_ops() {
         let mut buf = [0u8; 1];
         let mut packer = MemoryPacker::new(&mut buf);
-        packer.write(&0u32); // overflow: needs 4, has 1
+        packer.write(&0u32);
         assert!(packer.had_overflow());
-        // A subsequent legitimate-size write must be skipped so the cursor stays put.
         packer.write(&0u8);
         assert!(packer.had_overflow());
-        // Buffer was untouched (no partial corruption).
         assert_eq!(buf, [0u8; 1]);
+    }
+
+    #[test]
+    fn overflow_preserves_first_failed_reservation() {
+        let mut buf = [0u8; 2];
+        let mut packer = MemoryPacker::new(&mut buf);
+
+        packer.write(&0u32);
+        packer.write(&0u64);
+
+        let err = packer.overflow_error().expect("captured error");
+        match err {
+            MemoryPackError::BufferTooSmall {
+                needed, remaining, ..
+            } => {
+                assert_eq!(needed, 4);
+                assert_eq!(remaining, 2);
+            }
+        }
     }
 
     #[test]

@@ -82,7 +82,7 @@ fn froox_alpha_and_transparent_blend_factor_shapes_stay_distinct() {
         MaterialBlendMode::UnityBlend { src: 1, dst: 10 }
     );
 
-    let pass = pass_from_kind(PassKind::ForwardTransparent, "fs_forward_base");
+    let pass = forward_transparent_pass("fs_forward_base");
     let alpha_pass = materialized_pass_for_blend_mode(&pass, alpha);
     let transparent_pass = materialized_pass_for_blend_mode(&pass, transparent);
     let alpha_blend = alpha_pass.blend.expect("alpha blend");
@@ -318,7 +318,7 @@ fn ztest_property_overrides_pass_depth_compare_for_reverse_z() {
 fn unity_ztest_domain_decodes_compare_function_for_reverse_z() {
     let pass = MaterialPassDesc {
         depth_compare_domain: MaterialDepthCompareDomain::UnityCompareFunction,
-        ..pass_from_kind(PassKind::Stencil, "fs_stencil")
+        ..stencil_pass("fs_stencil")
     };
     let state = MaterialRenderState {
         depth_compare: Some(4),
@@ -402,7 +402,7 @@ fn forward_pass_uses_unity_separate_alpha_blend() {
 
 #[test]
 fn overlay_pass_uses_unity_rgb_blend_and_keeps_alpha_max() {
-    let pass = pass_from_kind(PassKind::OverlayFront, "fs_overlay");
+    let pass = overlay_front_pass("fs_overlay");
     let materialized =
         materialized_pass_for_blend_mode(&pass, MaterialBlendMode::UnityBlend { src: 5, dst: 10 });
     let blend = materialized.blend.expect("overlay blend");
@@ -419,7 +419,7 @@ fn overlay_pass_uses_unity_rgb_blend_and_keeps_alpha_max() {
 
 #[test]
 fn forward_transparent_defaults_to_unity_premultiplied_blend() {
-    let pass = pass_from_kind(PassKind::ForwardTransparent, "fs_forward_base");
+    let pass = forward_transparent_pass("fs_forward_base");
     let blend = pass.blend.expect("transparent default blend");
 
     assert!(!pass.depth_write);
@@ -436,7 +436,7 @@ fn forward_transparent_defaults_to_unity_premultiplied_blend() {
 
 #[test]
 fn fixed_alpha_blend_pass_matches_unity_fade_state() {
-    let pass = pass_from_kind(PassKind::ForwardAlphaBlend, "fs_forward_base");
+    let pass = forward_alpha_blend_pass("fs_forward_base");
     let blend = pass.blend.expect("fade blend");
 
     assert_eq!(pass.name, "forward_alpha_blend");
@@ -460,7 +460,7 @@ fn fixed_alpha_blend_pass_matches_unity_fade_state() {
 
 #[test]
 fn fixed_alpha_blend_zwrite_pass_matches_unity_fur_state() {
-    let pass = pass_from_kind(PassKind::ForwardAlphaBlendZWrite, "fs_forward_fur");
+    let pass = forward_alpha_blend_zwrite_pass("fs_forward_fur");
     let blend = pass.blend.expect("fur blend");
 
     assert_eq!(pass.name, "forward_alpha_blend_zwrite");
@@ -484,7 +484,7 @@ fn fixed_alpha_blend_zwrite_pass_matches_unity_fur_state() {
 
 #[test]
 fn fixed_premultiplied_transparent_pass_matches_unity_state() {
-    let pass = pass_from_kind(PassKind::ForwardPremultipliedTransparent, "fs_forward_base");
+    let pass = forward_premultiplied_transparent_pass("fs_forward_base");
     let blend = pass.blend.expect("premultiplied blend");
 
     assert_eq!(pass.name, "forward_premultiplied_transparent");
@@ -499,7 +499,7 @@ fn fixed_premultiplied_transparent_pass_matches_unity_state() {
 
 #[test]
 fn stencil_pass_uses_source_color_mask_and_stencil_state() {
-    let pass = pass_from_kind(PassKind::Stencil, "fs_main");
+    let pass = stencil_pass("fs_main");
     assert_eq!(pass.name, "stencil");
     assert!(!pass.depth_write);
     assert_eq!(pass.cull_mode, Some(wgpu::Face::Front));
@@ -521,7 +521,7 @@ fn stencil_pass_uses_source_color_mask_and_stencil_state() {
 
 #[test]
 fn overlay_pass_preserves_explicit_blend_one_zero_for_alpha_max() {
-    let pass = pass_from_kind(PassKind::OverlayBehind, "fs_overlay");
+    let pass = overlay_behind_pass("fs_overlay");
     let materialized =
         materialized_pass_for_blend_mode(&pass, MaterialBlendMode::UnityBlend { src: 1, dst: 0 });
     let blend = materialized.blend.expect("overlay blend");
@@ -534,7 +534,7 @@ fn overlay_pass_preserves_explicit_blend_one_zero_for_alpha_max() {
 
 #[test]
 fn filter_pass_preserves_explicit_blend_one_zero_for_alpha_max() {
-    let pass = pass_from_kind(PassKind::ForwardFilter, "fs_main");
+    let pass = forward_filter_pass("fs_main");
     let materialized =
         materialized_pass_for_blend_mode(&pass, MaterialBlendMode::UnityBlend { src: 1, dst: 0 });
     let blend = materialized.blend.expect("filter blend");
@@ -552,7 +552,7 @@ fn filter_pass_preserves_explicit_blend_one_zero_for_alpha_max() {
 
 #[test]
 fn volume_front_pass_matches_unity_volume_state() {
-    let pass = pass_from_kind(PassKind::VolumeFront, "fs_volume");
+    let pass = volume_front_pass("fs_volume");
     let blend = pass.blend.expect("volume blend");
 
     assert_eq!(pass.name, "volume_front");
@@ -570,7 +570,7 @@ fn volume_front_pass_matches_unity_volume_state() {
 
 #[test]
 fn base_refract_embedded_policy_ignores_host_ztest() {
-    let pass = pass_from_kind(PassKind::ForwardFilter, "fs_main");
+    let pass = forward_filter_pass("fs_main");
     let materialized = materialized_embedded_pass_for_blend_mode(
         "refract_default",
         &pass,
@@ -589,7 +589,7 @@ fn base_refract_embedded_policy_ignores_host_ztest() {
 
 #[test]
 fn refract_perobject_keeps_host_ztest_policy() {
-    let pass = pass_from_kind(PassKind::ForwardFilter, "fs_main");
+    let pass = forward_filter_pass("fs_main");
     let materialized = materialized_embedded_pass_for_blend_mode(
         "refract_perobject_default",
         &pass,
@@ -608,7 +608,7 @@ fn refract_perobject_keeps_host_ztest_policy() {
 
 #[test]
 fn volume_front_preserves_explicit_one_zero_alpha_max_blend() {
-    let pass = pass_from_kind(PassKind::VolumeFront, "fs_volume");
+    let pass = volume_front_pass("fs_volume");
     let materialized =
         materialized_pass_for_blend_mode(&pass, MaterialBlendMode::UnityBlend { src: 1, dst: 0 });
     let blend = materialized.blend.expect("volume blend");
@@ -622,7 +622,7 @@ fn volume_front_preserves_explicit_one_zero_alpha_max_blend() {
 
 #[test]
 fn overlay_always_pass_matches_fixed_overlay_shader_state() {
-    let pass = pass_from_kind(PassKind::OverlayAlways, "fs_main");
+    let pass = overlay_always_pass("fs_main");
     let blend = pass.blend.expect("overlay blend");
 
     assert_eq!(pass.name, "overlay_always");
@@ -638,7 +638,7 @@ fn overlay_always_pass_matches_fixed_overlay_shader_state() {
 
 #[test]
 fn transparent_forward_host_blend_override_materializes() {
-    let pass = pass_from_kind(PassKind::ForwardTransparent, "fs_forward_base");
+    let pass = forward_transparent_pass("fs_forward_base");
 
     let stem_default = materialized_pass_for_blend_mode(&pass, MaterialBlendMode::StemDefault);
     assert!(stem_default.blend.is_some());
@@ -701,17 +701,15 @@ fn transparent_fixed_cull_ignores_host_cull() {
     };
 
     assert_eq!(
-        pass_from_kind(PassKind::ForwardTransparent, "fs_forward_base").resolved_cull_mode(state),
+        forward_transparent_pass("fs_forward_base").resolved_cull_mode(state),
         None
     );
     assert_eq!(
-        pass_from_kind(PassKind::ForwardTransparentCullFront, "fs_back_faces")
-            .resolved_cull_mode(state),
+        forward_transparent_cull_front_pass("fs_back_faces").resolved_cull_mode(state),
         Some(wgpu::Face::Front)
     );
     assert_eq!(
-        pass_from_kind(PassKind::ForwardTransparentCullBack, "fs_front_faces")
-            .resolved_cull_mode(state),
+        forward_transparent_cull_back_pass("fs_front_faces").resolved_cull_mode(state),
         Some(wgpu::Face::Back)
     );
 }

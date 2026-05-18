@@ -6,6 +6,7 @@
 //! Also hosts the cooperative renderer hang/hitch detector ([`Watchdog`]).
 
 pub(crate) mod crash_context;
+pub(crate) mod gpu_flight_recorder;
 mod hud;
 pub(crate) mod log_once;
 pub(crate) mod log_throttle;
@@ -13,6 +14,7 @@ pub(crate) mod per_view;
 mod snapshots;
 mod watchdog;
 
+pub(crate) use hud::DebugHudOverlayContext;
 pub use hud::{DebugHud, DebugHudEncodeError, DebugHudInput, sanitize_input_state_for_imgui_host};
 pub use per_view::{PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot};
 pub use snapshots::{

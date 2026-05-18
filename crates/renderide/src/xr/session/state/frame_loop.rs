@@ -11,6 +11,9 @@ use std::time::Duration;
 use openxr as xr;
 
 use super::XrSessionState;
+use crate::diagnostics::gpu_flight_recorder::{
+    GpuFlightCallResult, GpuFlightEventKind, GpuFlightOpenXrCall, GpuFlightRecorder,
+};
 use crate::gpu::driver_thread::wait_for_finalize;
 
 impl XrSessionState {
@@ -32,6 +35,7 @@ impl XrSessionState {
     pub fn wait_frame(
         &mut self,
         gpu_queue_access_gate: &crate::gpu::GpuQueueAccessGate,
+        flight_recorder: &GpuFlightRecorder,
     ) -> Result<Option<xr::FrameState>, xr::sys::Result> {
         if let Some(rx) = self.pending_finalize.take() {
             profiling::scope!("xr::wait_previous_finalize");
@@ -39,25 +43,74 @@ impl XrSessionState {
             // `take_pending_error` plumbing surfaces driver crashes separately so we
             // log here and fall through to the error-slot drain below.
             if wait_for_finalize(rx).is_err() {
+                flight_recorder.record(GpuFlightEventKind::OpenXrCall {
+                    call: GpuFlightOpenXrCall::WaitPreviousFinalize,
+                    result: GpuFlightCallResult::failed_static("timeout_or_disconnected"),
+                    image_index: None,
+                    predicted_display_time_nanos: None,
+                });
                 logger::warn!(
                     "xr: timed out waiting for previous-frame finalize (session_running={} frame_open={})",
                     self.session_running,
                     self.frame_open.load(Ordering::Acquire)
                 );
+            } else {
+                flight_recorder.record(GpuFlightEventKind::OpenXrCall {
+                    call: GpuFlightOpenXrCall::WaitPreviousFinalize,
+                    result: GpuFlightCallResult::Ok,
+                    image_index: None,
+                    predicted_display_time_nanos: None,
+                });
             }
         }
         if let Some(err) = self.take_finalize_error() {
+            flight_recorder.record(GpuFlightEventKind::OpenXrCall {
+                call: GpuFlightOpenXrCall::WaitFrame,
+                result: GpuFlightCallResult::failed_debug(err),
+                image_index: None,
+                predicted_display_time_nanos: None,
+            });
             return Err(err);
         }
         if !self.session_running {
             std::thread::sleep(Duration::from_millis(10));
             return Ok(None);
         }
-        let state = self.frame_wait.wait()?;
+        let state = match self.frame_wait.wait() {
+            Ok(state) => {
+                flight_recorder.record(GpuFlightEventKind::OpenXrCall {
+                    call: GpuFlightOpenXrCall::WaitFrame,
+                    result: GpuFlightCallResult::Ok,
+                    image_index: None,
+                    predicted_display_time_nanos: Some(state.predicted_display_time.as_nanos()),
+                });
+                state
+            }
+            Err(error) => {
+                flight_recorder.record(GpuFlightEventKind::OpenXrCall {
+                    call: GpuFlightOpenXrCall::WaitFrame,
+                    result: GpuFlightCallResult::failed_debug(error),
+                    image_index: None,
+                    predicted_display_time_nanos: None,
+                });
+                return Err(error);
+            }
+        };
         {
             profiling::scope!("xr::frame_stream_begin");
             let _gate = gpu_queue_access_gate.lock();
-            self.frame_stream.lock().begin()?;
+            let begin_result = self.frame_stream.lock().begin();
+            let begin_flight_result = begin_result.as_ref().map_or_else(
+                |error| GpuFlightCallResult::failed_debug(*error),
+                |()| GpuFlightCallResult::Ok,
+            );
+            flight_recorder.record(GpuFlightEventKind::OpenXrCall {
+                call: GpuFlightOpenXrCall::BeginFrame,
+                result: begin_flight_result,
+                image_index: None,
+                predicted_display_time_nanos: Some(state.predicted_display_time.as_nanos()),
+            });
+            begin_result?;
         };
         self.frame_open.store(true, Ordering::Release);
         Ok(Some(state))

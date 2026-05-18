@@ -1,6 +1,8 @@
 //! Unity GradientSkybox (`Shader "GradientSkybox"`): sky gradient material.
 
 
+//#mat_default _BaseColor vec4 1.0 1.0 1.0 1.0
+
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv
 #import renderide::skybox::gradient as skygrad
@@ -42,7 +44,7 @@ fn vs_main(
     return out;
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return skygrad::gradient_sky_color(

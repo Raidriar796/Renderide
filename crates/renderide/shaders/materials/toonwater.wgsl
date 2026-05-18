@@ -19,6 +19,19 @@
 //#texture_default _VoronoiTex empty
 //#texture_default _NoiseTex empty
 //#texture_default _ReflectionTex black
+//#mat_default _SpecularHighlights float 1.0
+//#mat_default _SmoothnessTextureChannel float 0.0
+//#mat_default _BumpScale float 1.0
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _Fresnel float 1.0
+//#mat_default _FresnelTint vec4 1.0 1.0 1.0 1.0
+//#mat_default _PlanarReflection float 1.0
+//#mat_default _Glossiness float 0.5
+//#mat_default _FresnelDiffCont float 0.5
+//#mat_default _FresnelPower float 0.5
+//#mat_default _FresnelStrength float 0.2
+//#mat_default _WaveCrest float 0.5
+//#mat_default _WaveScale float 0.5
 
 #import renderide::lighting::birp as bl
 #import renderide::frame::globals as rg
@@ -153,7 +166,7 @@ fn refract_screen_uv(uv_in: vec2<f32>) -> vec2<f32> {
     return clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,

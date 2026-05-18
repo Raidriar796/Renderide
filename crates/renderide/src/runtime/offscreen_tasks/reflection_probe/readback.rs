@@ -124,7 +124,7 @@ pub(in crate::runtime) fn compute_probe_readback_layout(
 }
 
 pub(in crate::runtime) fn readback_reflection_probe_cube(
-    gpu: &GpuContext,
+    gpu: &mut GpuContext,
     convolver: &mut SkyboxIblConvolver,
     cube_texture: &wgpu::Texture,
     extent: ProbeTaskExtent,
@@ -145,10 +145,19 @@ pub(in crate::runtime) fn readback_reflection_probe_cube(
             cube_texture,
             extent.size,
             extent.mip_levels,
-            None,
+            gpu.gpu_profiler(),
         )
         .map_err(|err| ReflectionProbeBakeError::Convolve(err.to_string()))?;
+    let copy_query = gpu
+        .gpu_profiler_mut()
+        .map(|p| p.begin_query("reflection_probe_task::cube_readback_copy", &mut encoder));
     encode_probe_cube_readback_copy(&mut encoder, cube_texture, layout, &readback);
+    if let Some(query) = copy_query
+        && let Some(prof) = gpu.gpu_profiler_mut()
+    {
+        prof.end_query(&mut encoder, query);
+        prof.resolve_queries(&mut encoder);
+    }
     let command_buffer = {
         profiling::scope!("CommandEncoder::finish::reflection_probe_task_readback");
         encoder.finish()

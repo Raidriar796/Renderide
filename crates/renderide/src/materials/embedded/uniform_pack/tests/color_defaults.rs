@@ -3,6 +3,7 @@
 use super::super::*;
 use super::common::*;
 
+use crate::embedded_shaders::EmbeddedMaterialDefaultValue;
 use crate::materials::ReflectedUniformScalarKind;
 use crate::materials::embedded::texture_pools::EmbeddedTexturePools;
 use crate::materials::host_data::{MaterialPropertyStore, MaterialPropertyValue};
@@ -114,6 +115,44 @@ fn color_named_texture_transform_vec4_uniforms_remain_raw() {
     assert_eq!(read_f32x4(&bytes, 16), input);
     assert_eq!(read_f32x4(&bytes, 32), input);
     assert_eq!(read_f32x4(&bytes, 48), input);
+}
+
+#[test]
+fn unwritten_texture_transform_vec4_uniforms_pack_unity_identity() {
+    let (reflected, ids, _) = reflected_with_uniform_fields(&[
+        ("_MainTex_ST", ReflectedUniformScalarKind::Vec4, 16, 0),
+        ("_NormalMap_ST", ReflectedUniformScalarKind::Vec4, 16, 16),
+        ("_FarTex0_ST", ReflectedUniformScalarKind::Vec4, 16, 32),
+        ("_NearTex1_ST", ReflectedUniformScalarKind::Vec4, 16, 48),
+        ("_Tint", ReflectedUniformScalarKind::Vec4, 16, 64),
+    ]);
+    let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
+    let pools = EmbeddedTexturePools {
+        texture: &texture,
+        texture3d: &texture3d,
+        cubemap: &cubemap,
+        render_texture: &render_texture,
+        video_texture: &video_texture,
+    };
+
+    let bytes = build_embedded_uniform_bytes(
+        &reflected,
+        &ids,
+        &MaterialPropertyStore::new(),
+        lookup(31),
+        &UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        },
+    )
+    .expect("uniform bytes");
+
+    let unity_identity = [1.0, 1.0, 0.0, 0.0];
+    assert_eq!(read_f32x4(&bytes, 0), unity_identity);
+    assert_eq!(read_f32x4(&bytes, 16), unity_identity);
+    assert_eq!(read_f32x4(&bytes, 32), unity_identity);
+    assert_eq!(read_f32x4(&bytes, 48), unity_identity);
+    assert_eq!(read_f32x4(&bytes, 64), [0.0; 4]);
 }
 
 #[test]
@@ -243,4 +282,139 @@ fn unwritten_scalar_fields_pack_as_zero() {
     assert_eq!(read_f32_at(&bytes, 0), 0.0);
     assert_eq!(read_f32_at(&bytes, 4), 0.0);
     assert_eq!(read_f32_at(&bytes, 8), 0.0);
+}
+
+#[test]
+fn material_scalar_defaults_pack_when_host_property_is_missing() {
+    let (reflected, ids, _) = reflected_with_f32_fields(&[
+        ("_GlossMapScale", 0),
+        ("_OcclusionStrength", 4),
+        ("_UVSec", 8),
+    ]);
+    let mut defaults = MaterialUniformDefaults::default();
+    defaults.insert(
+        "_GlossMapScale".to_string(),
+        EmbeddedMaterialDefaultValue::float(1.0),
+    );
+    defaults.insert(
+        "_OcclusionStrength".to_string(),
+        EmbeddedMaterialDefaultValue::float(1.0),
+    );
+    let (textures, texture3d, cubemaps, render_textures, videos) = empty_texture_pools();
+    let pools = EmbeddedTexturePools {
+        texture: &textures,
+        texture3d: &texture3d,
+        cubemap: &cubemaps,
+        render_texture: &render_textures,
+        video_texture: &videos,
+    };
+    let value_spaces = MaterialUniformValueSpaces::default();
+    let metadata = MaterialUniformPackMetadata {
+        value_spaces: &value_spaces,
+        material_defaults: &defaults,
+    };
+
+    let bytes = build_embedded_uniform_bytes_with_material_defaults(
+        &reflected,
+        &ids,
+        &metadata,
+        &MaterialPropertyStore::new(),
+        lookup(2),
+        &UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        },
+        None,
+    )
+    .expect("uniform bytes");
+
+    assert_eq!(read_f32_at(&bytes, 0), 1.0);
+    assert_eq!(read_f32_at(&bytes, 4), 1.0);
+    assert_eq!(read_f32_at(&bytes, 8), 0.0);
+}
+
+#[test]
+fn explicit_host_scalar_overrides_material_default() {
+    let (reflected, ids, registry) = reflected_with_f32_fields(&[("_GlossMapScale", 0)]);
+    let mut defaults = MaterialUniformDefaults::default();
+    defaults.insert(
+        "_GlossMapScale".to_string(),
+        EmbeddedMaterialDefaultValue::float(1.0),
+    );
+    let mut store = MaterialPropertyStore::new();
+    store.set_material(
+        3,
+        registry.intern("_GlossMapScale"),
+        MaterialPropertyValue::Float(0.25),
+    );
+    let (textures, texture3d, cubemaps, render_textures, videos) = empty_texture_pools();
+    let pools = EmbeddedTexturePools {
+        texture: &textures,
+        texture3d: &texture3d,
+        cubemap: &cubemaps,
+        render_texture: &render_textures,
+        video_texture: &videos,
+    };
+    let value_spaces = MaterialUniformValueSpaces::default();
+    let metadata = MaterialUniformPackMetadata {
+        value_spaces: &value_spaces,
+        material_defaults: &defaults,
+    };
+
+    let bytes = build_embedded_uniform_bytes_with_material_defaults(
+        &reflected,
+        &ids,
+        &metadata,
+        &store,
+        lookup(3),
+        &UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        },
+        None,
+    )
+    .expect("uniform bytes");
+
+    assert_eq!(read_f32_at(&bytes, 0), 0.25);
+}
+
+#[test]
+fn material_vec4_defaults_pack_before_texture_transform_identity() {
+    let (reflected, ids, _) =
+        reflected_with_uniform_fields(&[("_MainTex_ST", ReflectedUniformScalarKind::Vec4, 16, 0)]);
+    let mut defaults = MaterialUniformDefaults::default();
+    let expected = [2.0, 2.0, 0.5, 0.5];
+    defaults.insert(
+        "_MainTex_ST".to_string(),
+        EmbeddedMaterialDefaultValue::vec4(expected),
+    );
+    let (textures, texture3d, cubemaps, render_textures, videos) = empty_texture_pools();
+    let pools = EmbeddedTexturePools {
+        texture: &textures,
+        texture3d: &texture3d,
+        cubemap: &cubemaps,
+        render_texture: &render_textures,
+        video_texture: &videos,
+    };
+    let value_spaces = MaterialUniformValueSpaces::default();
+    let metadata = MaterialUniformPackMetadata {
+        value_spaces: &value_spaces,
+        material_defaults: &defaults,
+    };
+
+    let bytes = build_embedded_uniform_bytes_with_material_defaults(
+        &reflected,
+        &ids,
+        &metadata,
+        &MaterialPropertyStore::new(),
+        lookup(4),
+        &UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        },
+        None,
+    )
+    .expect("uniform bytes");
+
+    assert_eq!(read_f32x4(&bytes, 0), expected);
 }

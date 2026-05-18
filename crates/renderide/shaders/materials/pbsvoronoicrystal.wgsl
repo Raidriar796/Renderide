@@ -12,6 +12,15 @@
 //#texture_default _GlossGradient white
 //#texture_default _EmissionGradient white
 //#texture_default _NormalMap bump
+//#mat_default _ColorTint vec4 1.0 1.0 1.0 1.0
+//#mat_default _EdgeColor vec4 0.0 0.0 0.0 1.0
+//#mat_default _EdgeNormalStrength float 0.5
+//#mat_default _NormalStrength float 1.0
+//#mat_default _Scale vec4 1.0 1.0 0.0 0.0
+//#mat_default _Glossiness float 0.5
+//#mat_default _EdgeGloss float 0.8
+//#mat_default _EdgeMetallic float 0.1
+//#mat_default _EdgeThickness float 0.1
 
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv
@@ -130,13 +139,14 @@ fn shade(
     let cell_emission = textureSample(_EmissionGradient, _EmissionGradient_sampler, cell_offset).rgb * mat._EmissionColor.rgb;
     let emission = mix(mat._EdgeEmission.rgb, cell_emission, border_lerp);
 
-    let surface = psurf::metallic(
+    let surface = psurf::metallic_with_geometric_normal(
         base_color,
         1.0,
         metallic,
         roughness,
         1.0,
         n,
+        world_n,
         emission,
     );
     return vec4<f32>(
@@ -151,7 +161,7 @@ fn shade(
     );
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

@@ -55,12 +55,40 @@ struct NodeDirtyMask {
 
 impl NodeDirtyMask {
     /// Allocates an empty mask with enough dedup capacity for `node_count` nodes.
+    #[cfg(test)]
     fn new(node_count: usize) -> Self {
         Self {
             flags: Vec::new(),
             indices: Vec::with_capacity(node_count.min(64)),
             any: false,
         }
+    }
+
+    /// Takes the reusable scratch vectors from `cache` and resets the marks from the previous
+    /// transform update.
+    fn take_from_cache(cache: &mut WorldTransformCache, node_count: usize) -> Self {
+        let mut flags = std::mem::take(&mut cache.transform_dirty_flags);
+        let mut indices = std::mem::take(&mut cache.transform_dirty_indices);
+        for &index in &indices {
+            if let Some(flag) = flags.get_mut(index) {
+                *flag = false;
+            }
+        }
+        indices.clear();
+        if flags.len() < node_count {
+            flags.resize(node_count, false);
+        }
+        Self {
+            flags,
+            indices,
+            any: false,
+        }
+    }
+
+    /// Restores the scratch vectors to `cache` for reuse by the next transform update.
+    fn restore_into(self, cache: &mut WorldTransformCache) {
+        cache.transform_dirty_flags = self.flags;
+        cache.transform_dirty_indices = self.indices;
     }
 
     /// Sets the dirty flag for `index`, growing the mask if a host row referenced an index past
@@ -199,12 +227,14 @@ pub fn extract_transforms_update(
         ..Default::default()
     };
     if update.removals.length > 0 {
+        profiling::scope!("scene::extract_transforms::removals");
         let ctx = format!("transforms removals scene_id={sid}");
         out.removals = shm
             .access_copy_diagnostic_with_context::<i32>(&update.removals, Some(&ctx))
             .map_err(SceneError::SharedMemoryAccess)?;
     }
     if update.parent_updates.length > 0 {
+        profiling::scope!("scene::extract_transforms::parent_updates");
         let ctx = format!("transforms parent_updates scene_id={sid}");
         out.parent_updates = shm
             .access_copy_diagnostic_with_context::<TransformParentUpdate>(
@@ -214,6 +244,7 @@ pub fn extract_transforms_update(
             .map_err(SceneError::SharedMemoryAccess)?;
     }
     if update.pose_updates.length > 0 {
+        profiling::scope!("scene::extract_transforms::pose_updates");
         let ctx = format!("transforms pose_updates scene_id={sid}");
         let max_bytes = transform_pose_update_copy_max_bytes(update);
         out.pose_updates = shm
@@ -247,12 +278,16 @@ pub fn apply_transforms_update_extracted(
     let mut invalidate_world = false;
     let mut full_invalidate_world = false;
 
-    ensure_world_cache_matches_node_count(space, cache, &mut invalidate_world);
+    {
+        profiling::scope!("scene::apply_transforms::sync_cache_size");
+        ensure_world_cache_matches_node_count(space, cache, &mut invalidate_world);
+    }
     if invalidate_world {
         full_invalidate_world = true;
     }
 
     if !extracted.removals.is_empty() {
+        profiling::scope!("scene::apply_transforms::removals");
         let had_removal = apply_transform_removals_ordered(
             space,
             cache,
@@ -268,51 +303,73 @@ pub fn apply_transforms_update_extracted(
     }
 
     let before_grow = invalidate_world;
-    grow_transform_buffers_to_target(
-        space,
-        cache,
-        extracted.target_transform_count,
-        &mut invalidate_world,
-    );
+    {
+        profiling::scope!("scene::apply_transforms::grow_buffers");
+        grow_transform_buffers_to_target(
+            space,
+            cache,
+            extracted.target_transform_count,
+            &mut invalidate_world,
+        );
+    }
     if invalidate_world && !before_grow {
         full_invalidate_world = true;
     }
 
-    let mut changed = NodeDirtyMask::new(space.nodes.len());
+    let mut changed = {
+        profiling::scope!("scene::apply_transforms::dirty_mask");
+        NodeDirtyMask::take_from_cache(cache, space.nodes.len())
+    };
 
-    removals::apply_transform_parent_updates_extracted(
-        space,
-        cache,
-        &extracted.parent_updates,
-        &mut changed,
-        &mut invalidate_world,
-    );
-    poses::apply_transform_pose_updates_extracted(
-        space,
-        &extracted.pose_updates,
-        extracted.frame_index,
-        sid,
-        &mut changed,
-    );
+    {
+        profiling::scope!("scene::apply_transforms::parent_updates");
+        removals::apply_transform_parent_updates_extracted(
+            space,
+            cache,
+            &extracted.parent_updates,
+            &mut changed,
+            &mut invalidate_world,
+        );
+    }
+    {
+        profiling::scope!("scene::apply_transforms::pose_updates");
+        poses::apply_transform_pose_updates_extracted(
+            space,
+            &extracted.pose_updates,
+            extracted.frame_index,
+            sid,
+            &mut changed,
+        );
+    }
 
     if changed.any() {
         invalidate_world = true;
     }
 
-    poses::propagate_transform_change_dirty_flags(cache, &changed);
+    {
+        profiling::scope!("scene::apply_transforms::propagate_dirty_flags");
+        poses::propagate_transform_change_dirty_flags(cache, &changed);
+    }
 
     if cache.children_dirty {
+        profiling::scope!("scene::apply_transforms::rebuild_children");
         rebuild_children(&space.node_parents, space.nodes.len(), &mut cache.children);
         cache.children_dirty = false;
     }
     if full_invalidate_world {
+        profiling::scope!("scene::apply_transforms::invalidate_all_descendants");
         mark_descendants_uncomputed(&cache.children, &mut cache.computed);
     } else if invalidate_world {
+        profiling::scope!("scene::apply_transforms::invalidate_changed_descendants");
         mark_descendants_uncomputed_from_roots(
             &cache.children,
             &mut cache.computed,
             changed.indices(),
         );
+    }
+    {
+        profiling::scope!("scene::apply_transforms::restore_dirty_mask");
+        changed.restore_into(cache);
     }
     invalidate_world
 }

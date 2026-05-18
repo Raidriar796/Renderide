@@ -11,10 +11,14 @@
 
 //#texture_default _Tex white
 //#texture_default _OffsetTex black
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _OffsetMagnitude vec4 0.1 0.1 0.0 0.0
+//#mat_default _PointSize vec4 0.1 0.1 0.0 0.0
+//#mat_default _PolarPow float 1.0
+//#mat_default _Cutoff float 0.5
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
-#import renderide::material::alpha_clip_sample as acs
 #import renderide::material::variant_bits as vb
 #import renderide::material::vertex_color as vc
 #import renderide::mesh::billboard as mb
@@ -222,7 +226,7 @@ fn vertex_color(color: vec4<f32>) -> vec4<f32> {
     return color;
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let use_texture = kw_TEXTURE();
@@ -231,9 +235,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var col: vec4<f32>;
     var clip_alpha: f32;
     if (use_texture) {
-        let uv_main = texture_uv(in.uv, in.view_layer);
         let tex = sample_main_texture(in.uv, in.view_layer);
-        clip_alpha = acs::texture_alpha_base_mip(_Tex, _Tex_sampler, uv_main);
+        clip_alpha = tex.a;
         if (use_color) {
             col = tex * mat._Color;
             clip_alpha = clip_alpha * mat._Color.a;

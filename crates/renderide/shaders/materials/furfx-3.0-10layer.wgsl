@@ -1,9 +1,26 @@
 //! FurFX 3.0 10Layer material root.
 
 //#texture_default _MainTex white
-//#texture_default _BumpMap bump
+//#texture_default _NormalMap bump
 //#texture_default _NoiseTex white
 //#texture_default _Cube empty
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _SpecColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _BonusAmbient vec4 0.0 0.0 0.0 1.0
+//#mat_default _ReflColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _Shininess float 8.0
+//#mat_default _Gloss float 1.0
+//#mat_default _FurLength float 0.05
+//#mat_default _Cutoff float 0.2
+//#mat_default _EdgeFade float 0.15
+//#mat_default _HairHardness float 1.0
+//#mat_default _HairThinness float 2.0
+//#mat_default _HairShading float 0.25
+//#mat_default _HairColoring float 0.1
+//#mat_default _SkinAlpha float 0.5
+//#mat_default _Reflection float 0.0
+//#mat_default _ReflMinLevel float 0.0
+//#mat_default _RimPower float 4.0
 
 #import renderide::fur::modern as fur
 #import renderide::fur::common as furc
@@ -210,22 +227,22 @@ fn vs_l_10(
 #endif
 }
 
-//#pass forward vs=vs_l_00
+//#pass type=forward vs=vs_l_00
 @fragment
 fn fs_base(input: furc::VertexOutput) -> @location(0) vec4<f32> {
     return fur::fragment_base(input);
 }
 
-//#pass forward vs=vs_l_01
-//#pass forward vs=vs_l_02
-//#pass forward vs=vs_l_03
-//#pass forward vs=vs_l_04
-//#pass forward vs=vs_l_05
-//#pass forward vs=vs_l_06
-//#pass forward vs=vs_l_07
-//#pass forward vs=vs_l_08
-//#pass forward vs=vs_l_09
-//#pass forward vs=vs_l_10
+//#pass type=forward vs=vs_l_01
+//#pass type=forward vs=vs_l_02
+//#pass type=forward vs=vs_l_03
+//#pass type=forward vs=vs_l_04
+//#pass type=forward vs=vs_l_05
+//#pass type=forward vs=vs_l_06
+//#pass type=forward vs=vs_l_07
+//#pass type=forward vs=vs_l_08
+//#pass type=forward vs=vs_l_09
+//#pass type=forward vs=vs_l_10
 @fragment
 fn fs_shell(input: furc::VertexOutput) -> @location(0) vec4<f32> {
     return fur::fragment_shell_3(input);

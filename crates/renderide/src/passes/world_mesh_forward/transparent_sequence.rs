@@ -232,6 +232,7 @@ fn copy_grab_snapshot(
         ctx.pass_frame,
         prepared,
         resources,
+        ctx.profiler,
     )
 }
 

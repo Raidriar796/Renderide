@@ -9,6 +9,8 @@
 
 //#texture_default _MainTex white
 //#texture_default _VertexOffsetMap black
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _VertexOffsetMagnitude float 0.1
 
 #import renderide::draw::per_draw as pd
 #import renderide::frame::globals as rg
@@ -81,16 +83,17 @@ fn vs_main(
 }
 
 /// Forward pass: Standard metallic shading with Unity's empty-surface defaults.
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_forward_base(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
-    let surface = psurf::metallic(
+    let surface = psurf::metallic_with_geometric_normal(
         vec3<f32>(0.0),
         1.0,
         0.0,
         1.0,
         1.0,
         normalize(in.world_n),
+        in.world_n,
         vec3<f32>(0.0),
     );
     let shaded = plight::shade_metallic_clustered(
@@ -105,7 +108,7 @@ fn fs_forward_base(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
 
 /// Depth-only proxy pass for the `addshadow` shadow caster: emit a zero color that retains
 /// the per-frame global bindings without writing albedo.
-//#pass depth_prepass
+//#pass type=depth_prepass blend=off zwrite=on ztest=material_froox(main) color_mask=0 cull=material(back) offset=material(0,0) stencil=material
 @fragment
 fn fs_depth_only(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
     let touch = in.primary_uv.x * 0.0;

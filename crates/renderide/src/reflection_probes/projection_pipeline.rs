@@ -224,7 +224,7 @@ fn encode_projection_job_with_profiler(
         request.profile_label,
         profiler.as_deref(),
     );
-    record_projection_readback_copy(&mut encoder, &buffers);
+    record_projection_readback_copy(&mut encoder, &buffers, profiler.as_deref());
     if let Some(profiler) = profiler.as_mut() {
         profiling::scope!("reflection_probe_sh2::resolve_profiler_queries");
         profiler.resolve_queries(&mut encoder);
@@ -350,9 +350,15 @@ fn record_projection_dispatch(
 fn record_projection_readback_copy(
     encoder: &mut wgpu::CommandEncoder,
     buffers: &ProjectionJobBuffers,
+    profiler: Option<&GpuProfilerHandle>,
 ) {
     profiling::scope!("reflection_probe_sh2::record_staging_copy");
+    let copy_query =
+        profiler.map(|p| p.begin_query("reflection_probe_sh2::readback_copy", encoder));
     encoder.copy_buffer_to_buffer(&buffers.output, 0, &buffers.staging, 0, SH2_OUTPUT_BYTES);
+    if let (Some(profiler), Some(query)) = (profiler, copy_query) {
+        profiler.end_query(encoder, query);
+    }
 }
 
 /// Submits the projection command buffer through the renderer driver thread.

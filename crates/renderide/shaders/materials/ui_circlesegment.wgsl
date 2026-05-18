@@ -10,6 +10,11 @@
 
 
 
+//#mat_default _FillTint vec4 1.0 1.0 1.0 1.0
+//#mat_default _OutlineTint vec4 1.0 1.0 1.0 1.0
+//#mat_default _OverlayTint vec4 1.0 1.0 1.0 0.5
+//#mat_default _Rect vec4 0.0 0.0 1.0 1.0
+
 #import renderide::frame::globals as rg
 #import renderide::core::math as rmath
 #import renderide::mesh::vertex as mv
@@ -136,7 +141,7 @@ fn compute_strength(angle_dist: f32, radius_dist: f32, corner: f32) -> f32 {
     return clamp(dist / width, 0.0, 1.0);
 }
 
-//#pass forward
+//#pass type=forward name=forward_filter blend=material_filter
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (uirc::should_clip_rect_kw(in.obj_xy, mat._Rect, uicirclesegment_kw(UICIRCLESEGMENT_KW_RECTCLIP))) {

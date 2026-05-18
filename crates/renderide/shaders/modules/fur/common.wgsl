@@ -28,7 +28,7 @@ fn saturate3(value: vec3<f32>) -> vec3<f32> {
 }
 
 fn shininess_to_perceptual_roughness(shininess: f32) -> f32 {
-    return clamp(sqrt(2.0 / (max(shininess, 0.0) + 2.0)), 0.02, 1.0);
+    return clamp(sqrt(2.0 / (max(shininess, 0.0) + 2.0)), 0.0, 1.0);
 }
 
 fn noise_uv(uv: vec2<f32>, noise_st: vec4<f32>, hair_thinness: f32) -> vec2<f32> {
@@ -53,22 +53,24 @@ fn fur_vertex_main(
     let draw = pd::get_draw(instance_index);
     let world_n = mv::world_normal(draw, n);
     let world_t = mv::world_tangent(draw, t);
-    let world_base = mv::world_position(draw, pos).xyz;
-    let shell_offset = world_n * fur_length * fur_multiplier * hair_hardness;
+    let shell_offset = n.xyz * fur_length * fur_multiplier * hair_hardness;
+    let shell_pos = vec4<f32>(pos.xyz + shell_offset, pos.w);
+    let world_base = mv::world_position(draw, shell_pos).xyz;
     let global_force = clamp(force_global.xyz, vec3<f32>(-1.0), vec3<f32>(1.0));
     let local_force = mv::model_vector(draw, clamp(force_local.xyz, vec3<f32>(-1.0), vec3<f32>(1.0)));
     let force_offset = (global_force + local_force) * fur_multiplier * fur_multiplier * fur_length;
-    let world_p = world_base + shell_offset + force_offset;
+    let world_p = world_base + force_offset;
     let vp = mv::select_view_proj(draw, view_idx);
 
     var out: VertexOutput;
     out.clip_pos = vp * vec4<f32>(world_p, 1.0);
     out.world_pos = world_p;
-    out.world_n = world_n;
+    out.world_n = normalize(world_n);
     out.world_t = world_t;
     out.main_uv = uvu::apply_st(uv0, main_st);
     out.noise_uv = uvu::apply_st(uv0, noise_st);
-    out.shell_noise_uv = uvu::apply_st(uv0 + world_n.xy * 0.0011 * fur_multiplier, noise_st);
+    let shell_noise_offset = vec2<f32>(1.0 - dot(n.xyz, vec3<f32>(0.0, 0.0, 1.0))) * 0.0011 * fur_multiplier;
+    out.shell_noise_uv = uvu::apply_st(uv0 + shell_noise_offset, noise_st);
     out.fur_multiplier = fur_multiplier;
     out.view_layer = mv::packed_view_layer(instance_index, view_idx);
     out.raw_uv = uv0;

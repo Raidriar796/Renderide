@@ -121,6 +121,11 @@ impl DisplayBlitResources {
         let outer_query = gpu
             .gpu_profiler_mut()
             .map(|p| p.begin_query("graph::display_blit.surface", &mut encoder));
+        let blit_query = gpu
+            .gpu_profiler_mut()
+            .map(|p| p.begin_pass_query("graph::display_blit.surface.pass", &mut encoder));
+        let blit_timestamp_writes =
+            crate::profiling::render_pass_timestamp_writes(blit_query.as_ref());
         encode_display_blit_pass(
             &mut encoder,
             &surface_view,
@@ -128,7 +133,13 @@ impl DisplayBlitResources {
             &bind_group,
             rect,
             source.background_color,
+            blit_timestamp_writes,
         );
+        if let Some(query) = blit_query
+            && let Some(prof) = gpu.gpu_profiler_mut()
+        {
+            prof.end_query(&mut encoder, query);
+        }
 
         if let Err(e) = overlay(&mut encoder, &surface_view, gpu) {
             logger::warn!("debug HUD overlay (display blit): {e}");
@@ -168,6 +179,7 @@ fn encode_display_blit_pass(
     bind_group: &wgpu::BindGroup,
     rect: FittedRectPx,
     background_color: Vec4,
+    timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
 ) {
     let bg = wgpu::Color {
         r: background_color.x as f64,
@@ -188,7 +200,7 @@ fn encode_display_blit_pass(
         })],
         depth_stencil_attachment: None,
         occlusion_query_set: None,
-        timestamp_writes: None,
+        timestamp_writes,
         multiview_mask: None,
     });
     pass.set_pipeline(pipeline);

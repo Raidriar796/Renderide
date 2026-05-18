@@ -5,9 +5,15 @@ use super::*;
 fn pass_directives(src: &str) -> Vec<&str> {
     src.lines()
         .filter_map(|line| {
-            line.trim_start()
-                .strip_prefix("//#pass ")
-                .map(|rest| rest.split_whitespace().next().unwrap_or(rest))
+            let rest = line.trim_start().strip_prefix("//#pass ")?;
+            let pass_type = rest
+                .split_whitespace()
+                .find_map(|token| token.strip_prefix("type="))?;
+            Some(
+                rest.split_whitespace()
+                    .find_map(|token| token.strip_prefix("name="))
+                    .unwrap_or(pass_type),
+            )
         })
         .collect()
 }
@@ -132,8 +138,6 @@ fn pbs_transparent_roots_keep_authored_pass_directives() -> io::Result<()> {
         "pbsdistancelerpspeculartransparent.wgsl",
         "pbsintersect.wgsl",
         "pbsintersectspecular.wgsl",
-        "pbsrimtransparent.wgsl",
-        "pbsrimtransparentspecular.wgsl",
         "pbsslicetransparent.wgsl",
         "pbsslicetransparentspecular.wgsl",
         "pbstriplanartransparent.wgsl",
@@ -143,6 +147,15 @@ fn pbs_transparent_roots_keep_authored_pass_directives() -> io::Result<()> {
         assert_eq!(pass_directives(&src), ["forward_transparent"], "{material}");
     }
 
+    for material in ["pbsrimtransparent.wgsl", "pbsrimtransparentspecular.wgsl"] {
+        let src = material_source(material)?;
+        assert_eq!(
+            pass_directives(&src),
+            ["forward_transparent_cull_back"],
+            "{material}"
+        );
+    }
+
     for material in [
         "pbsrimtransparentzwrite.wgsl",
         "pbsrimtransparentzwritespecular.wgsl",
@@ -150,7 +163,7 @@ fn pbs_transparent_roots_keep_authored_pass_directives() -> io::Result<()> {
         let src = material_source(material)?;
         assert_eq!(
             pass_directives(&src),
-            ["depth_prepass", "forward_transparent"],
+            ["depth_prepass", "forward_transparent_cull_back"],
             "{material}"
         );
     }
@@ -212,6 +225,28 @@ fn pbs_material_roots_use_shared_sampling_and_mask_helpers() -> io::Result<()> {
         "pbsdualsidedspecular.wgsl",
         "pbsdualsidedtransparent.wgsl",
         "pbsdualsidedtransparentspecular.wgsl",
+    ] {
+        let src = material_source(material)?;
+        assert!(
+            src.contains("psamp::sample_optional_two_sided_world_normal("),
+            "{material} must use the shared two-sided normal sampling helper"
+        );
+        for forbidden in [
+            "nd::decode_ts_normal_with_placeholder_sample",
+            "pnorm::orthonormal_tbn",
+        ] {
+            assert!(
+                !src.contains(forbidden),
+                "{material} must delegate `{forbidden}` through pbs::sampling"
+            );
+        }
+    }
+
+    for material in [
+        "pbsdistancelerp.wgsl",
+        "pbsdistancelerpspecular.wgsl",
+        "pbsdistancelerptransparent.wgsl",
+        "pbsdistancelerpspeculartransparent.wgsl",
     ] {
         let src = material_source(material)?;
         assert!(
@@ -437,17 +472,37 @@ fn spot_lights_do_not_use_arbitrary_smoothstep_cone_fade() -> io::Result<()> {
 
 #[test]
 fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
+    let standard = module_source("pbs/standard.wgsl")?;
+    for required in [
+        "fn standard_alpha(",
+        "return color_alpha;",
+        "return color_alpha * texture_alpha;",
+        "fn clip_standard_alpha(",
+        "if (enabled && alpha <= cutoff) {",
+        "fn occlusion_from_sample(sample: f32, strength: f32) -> f32",
+        "return mix(1.0, sample, clamp(strength, 0.0, 1.0));",
+    ] {
+        assert!(
+            standard.contains(required),
+            "pbs/standard.wgsl must contain `{required}`"
+        );
+    }
+
     let metallic = material_source("pbsmetallic.wgsl")?;
     for required in [
         "_GlossMapScale: f32",
         "_OcclusionStrength: f32",
+        "#import renderide::pbs::standard as pstd",
         "return pbs_kw(PBSMETALLIC_KW_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A);",
-        "let base_alpha = unity_standard_alpha(albedo_sample.a);",
-        "let clip_alpha = unity_standard_clip_alpha(uv_main);",
-        "smoothness = mg.a * mat._GlossMapScale;",
-        "smoothness = albedo_sample.a * mat._GlossMapScale;",
+        "let base_alpha = pstd::standard_alpha(mat._Color.a, albedo_sample.a, smoothness_from_albedo_alpha());",
+        "pstd::clip_standard_alpha(base_alpha, mat._Cutoff, alpha_test_enabled());",
+        "let smoothness_scale = mat._GlossMapScale;",
+        "smoothness = mg.a * smoothness_scale;",
+        "smoothness = albedo_sample.a * smoothness_scale;",
         "ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).g",
-        "mix(1.0, occlusion_sample, clamp(mat._OcclusionStrength, 0.0, 1.0))",
+        "pstd::occlusion_from_sample(occlusion_sample, mat._OcclusionStrength);",
+        "psurf::metallic_with_geometric_normal(",
+        "world_n,",
     ] {
         assert!(
             metallic.contains(required),
@@ -455,22 +510,128 @@ fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
         );
     }
     assert!(
-        !metallic.contains("mat._SmoothnessTextureChannel > 0.5"),
+        !metallic.contains("mat._SmoothnessTextureChannel > 0.5")
+            && !metallic.contains("unity_standard_clip_alpha"),
         "pbsmetallic.wgsl must follow the Unity Standard keyword path for albedo-alpha smoothness"
     );
 
     let specular = material_source("pbsspecular.wgsl")?;
     for required in [
-        "let base_alpha = unity_standard_alpha(albedo_sample.a);",
-        "let clip_alpha = unity_standard_clip_alpha(uv_main);",
+        "#import renderide::pbs::standard as pstd",
+        "let base_alpha = pstd::standard_alpha(mat._Color.a, albedo_sample.a, smoothness_from_albedo_alpha());",
+        "pstd::clip_standard_alpha(base_alpha, mat._Cutoff, alpha_test_enabled());",
         "ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).g",
+        "pstd::occlusion_from_sample(occlusion_sample, mat._OcclusionStrength);",
+        "psurf::specular_with_geometric_normal(",
+        "world_n,",
     ] {
         assert!(
             specular.contains(required),
             "pbsspecular.wgsl must contain `{required}`"
         );
     }
+    assert!(
+        !specular.contains("unity_standard_clip_alpha"),
+        "pbsspecular.wgsl must clip against the visible filtered albedo alpha"
+    );
 
+    Ok(())
+}
+
+#[test]
+fn standard_pbs_roots_enforce_unity_default_for_unsent_parameters() -> io::Result<()> {
+    for material in ["pbsmetallic.wgsl", "pbsspecular.wgsl"] {
+        let src = material_source(material)?;
+        for required in [
+            "//#mat_default _GlossMapScale float 1.0",
+            "//#mat_default _OcclusionStrength float 1.0",
+            "let smoothness_scale = mat._GlossMapScale;",
+            "pstd::occlusion_from_sample(occlusion_sample, mat._OcclusionStrength);",
+        ] {
+            assert!(
+                src.contains(required),
+                "{material} must contain `{required}`"
+            );
+        }
+        assert!(
+            !src.contains("// let smoothness_scale = mat._GlossMapScale;")
+                && !src.contains("// let occlusion_strength = mat._OcclusionStrength;"),
+            "{material} must use material-default metadata instead of commented shader fallbacks"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn furfx_and_toon_roots_declare_unity_defaults_for_unsent_fields() -> io::Result<()> {
+    for path in wgsl_files_recursive("shaders/materials")? {
+        let label = file_label(&path);
+        if !label.contains("/furfx") {
+            continue;
+        }
+        let src = source_file(&path)?;
+        let required: &[&str] = if src.contains("renderide::fur::classic_selfshadow") {
+            &[
+                "//#mat_default _EdgeFade float 0.15",
+                "//#mat_default _SkinAlpha float 0.5",
+                "//#mat_default _Reflection float 0.0",
+                "//#mat_default _ShadowStrength float 1.0",
+            ]
+        } else if src.contains("renderide::fur::classic_advanced") {
+            &[
+                "//#mat_default _EdgeFade float 0.15",
+                "//#mat_default _SkinAlpha float 0.5",
+                "//#mat_default _Reflection float 0.0",
+            ]
+        } else if src.contains("renderide::fur::classic_basic") {
+            &[
+                "//#mat_default _EdgeFade float 0.15",
+                "//#mat_default _SkinAlpha float 0.5",
+            ]
+        } else if src.contains("renderide::fur::modern") {
+            &[
+                "//#mat_default _BonusAmbient vec4 0.0 0.0 0.0 1.0",
+                "//#mat_default _ReflColor vec4 1.0 1.0 1.0 1.0",
+                "//#mat_default _EdgeFade float 0.15",
+                "//#mat_default _SkinAlpha float 0.5",
+                "//#mat_default _Reflection float 0.0",
+                "//#mat_default _ReflMinLevel float 0.0",
+            ]
+        } else {
+            continue;
+        };
+        for directive in required {
+            assert!(
+                src.contains(directive),
+                "{label} must declare `{directive}`"
+            );
+        }
+    }
+
+    for (material, required) in [
+        (
+            "toonstandard.wgsl",
+            [
+                "//#mat_default _SpecularHighlights float 1.0",
+                "//#mat_default _GlossyReflections float 1.0",
+            ],
+        ),
+        (
+            "toonwater.wgsl",
+            [
+                "//#mat_default _SpecularHighlights float 1.0",
+                "//#mat_default _SmoothnessTextureChannel float 0.0",
+            ],
+        ),
+    ] {
+        let src = material_source(material)?;
+        for directive in required {
+            assert!(
+                src.contains(directive),
+                "{material} must declare `{directive}`"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -515,6 +676,7 @@ fn pbs_roughness_keeps_indirect_mirror_path_unclamped() -> io::Result<()> {
         "fn direct_alpha_from_perceptual_roughness(",
         "return max(clamped * clamped, MIN_ALPHA);",
         "fn direct_perceptual_roughness(",
+        "fn eval_direct_specular_lobe(",
     ] {
         assert!(
             brdf_src.contains(required),
@@ -526,7 +688,8 @@ fn pbs_roughness_keeps_indirect_mirror_path_unclamped() -> io::Result<()> {
     for required in [
         "let direct_roughness = brdf::direct_perceptual_roughness(s.roughness);",
         "let direct_dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);",
-        "let indirect_dfg = brdf::sample_ibl_dfg_lut(s.roughness, n_dot_v);",
+        "let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);",
+        "let indirect_dfg = brdf::sample_ibl_dfg_lut(indirect_roughness, n_dot_v);",
     ] {
         assert!(
             lighting_src.contains(required),
@@ -548,6 +711,225 @@ fn pbs_roughness_keeps_indirect_mirror_path_unclamped() -> io::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+#[test]
+fn pbs_direct_diffuse_uses_fresnel_transmission() -> io::Result<()> {
+    let brdf_src = module_source("pbs/brdf.wgsl")?;
+    for required in [
+        "fn max_component(v: vec3<f32>) -> f32",
+        "fn direct_diffuse_fresnel_transmission(f: vec3<f32>, f0: vec3<f32>) -> f32",
+        "return clamp((1.0 - f_peak) / max(1.0 - f0_peak, 1e-4), 0.0, 1.0);",
+        "* direct_diffuse_fresnel_transmission(direct_lobe.f, f0)",
+        "* fd_burley(direct_lobe.n_dot_v, direct_lobe.n_dot_l, direct_lobe.l_dot_h, diffuse_roughness);",
+    ] {
+        assert!(
+            brdf_src.contains(required),
+            "pbs/brdf.wgsl must contain `{required}`"
+        );
+    }
+
+    assert!(
+        !brdf_src.contains("let fd = diffuse_color * fd_lambert();"),
+        "PBS direct lighting must not bypass Fresnel diffuse transmission"
+    );
+    Ok(())
+}
+
+#[test]
+fn pbs_direct_diffuse_uses_burley_rough_diffuse() -> io::Result<()> {
+    let brdf_src = module_source("pbs/brdf.wgsl")?;
+    for required in [
+        "fn fd_burley(n_dot_v: f32, n_dot_l: f32, l_dot_h: f32, perceptual_roughness: f32) -> f32",
+        "let fd90 = 0.5 + 2.0 * roughness * loh * loh;",
+        "let light_scatter = f_schlick_scalar(1.0, fd90, n_dot_l);",
+        "let view_scatter = f_schlick_scalar(1.0, fd90, n_dot_v);",
+        "return light_scatter * view_scatter * (1.0 / PI);",
+        "specular_roughness: f32,\n    diffuse_roughness: f32,",
+        "let alpha = direct_alpha_from_perceptual_roughness(perceptual_roughness);",
+        "fd_burley(direct_lobe.n_dot_v, direct_lobe.n_dot_l, direct_lobe.l_dot_h, diffuse_roughness)",
+    ] {
+        assert!(
+            brdf_src.contains(required),
+            "pbs/brdf.wgsl must contain rough-diffuse term `{required}`"
+        );
+    }
+
+    let lighting_src = module_source("pbs/lighting.wgsl")?;
+    for required in [
+        "aa_roughness,\n                s.roughness,\n                s.metallic,",
+        "aa_roughness,\n                s.roughness,\n                s.base_color,",
+        "brdf::diffuse_only_metallic(light, world_pos, s.normal, view_dir, s.roughness, s.base_color, s.metallic)",
+        "brdf::diffuse_only_specular(\n                light,\n                world_pos,\n                s.normal,\n                view_dir,\n                s.roughness,",
+    ] {
+        assert!(
+            lighting_src.contains(required),
+            "pbs/lighting.wgsl must keep direct specular AA roughness separate from diffuse roughness; missing `{required}`"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn pbs_direct_specular_lobe_is_shared() -> io::Result<()> {
+    let brdf_src = module_source("pbs/brdf.wgsl")?;
+    for required in [
+        "struct DirectSpecularEval",
+        "fn eval_direct_specular_lobe(",
+        "let alpha = direct_alpha_from_perceptual_roughness(perceptual_roughness);",
+        "let f = f_schlick(f0, f90_from_f0(f0), v_dot_h);",
+        "let d = d_ggx(n_dot_h, alpha);",
+        "let vis = v_smith_ggx_correlated(n_dot_v, n_dot_l, alpha);",
+        "let fr = max(vec3<f32>(0.0), (d * vis) * f * energy_compensation);",
+        "let direct_lobe = eval_direct_specular_lobe(n, ls.l, v, specular_roughness, f0, energy_compensation);",
+        "direct_lobe.specular_brdf",
+    ] {
+        assert!(
+            brdf_src.contains(required),
+            "pbs/brdf.wgsl must share direct specular lobe term `{required}`"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn fur_lighting_uses_full_pbs_brdf_stack() -> io::Result<()> {
+    let fur_lighting = module_source("fur/lighting.wgsl")?;
+    for required in [
+        "let aa_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);",
+        "direct = direct + brdf::direct_radiance_specular(",
+        "aa_roughness,\n                s.roughness,",
+        "let direct_roughness = brdf::direct_perceptual_roughness(s.roughness);",
+        "let direct_dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);",
+        "let energy_compensation = brdf::energy_compensation_from_dfg(direct_dfg, f0);",
+        "rprobe::has_indirect_specular(view_layer, options.glossy_reflections_enabled)",
+        "let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);",
+        "brdf::indirect_specular_energy_from_dfg(indirect_dfg, f0, indirect_specular_enabled)",
+        "brdf::indirect_specular_visibility(n_dot_v, s.occlusion, indirect_roughness, f0)",
+        "let ambient = brdf::indirect_diffuse_specular(",
+        "let indirect_specular = rprobe::indirect_specular_with_energy(",
+        "specular_energy * specular_visibility",
+    ] {
+        assert!(
+            fur_lighting.contains(required),
+            "fur/lighting.wgsl must use PBS BRDF feature `{required}`"
+        );
+    }
+    assert!(
+        !fur_lighting.contains("let specular_occlusion = brdf::specular_ao_lagarde"),
+        "Fur lighting must route specular AO through PBS multi-bounce visibility"
+    );
+
+    let fur_common = module_source("fur/common.wgsl")?;
+    assert!(
+        fur_common.contains("return clamp(sqrt(2.0 / (max(shininess, 0.0) + 2.0)), 0.0, 1.0);"),
+        "Fur shininess conversion must keep mirror-smooth indirect roughness available"
+    );
+    assert!(
+        !fur_common.contains(", 0.02, 1.0)"),
+        "Fur shininess conversion must not bake in a direct-light roughness floor"
+    );
+
+    for path in wgsl_files_recursive("shaders/modules/fur")? {
+        let label = file_label(&path);
+        if label.ends_with("fur/lighting.wgsl") || label.ends_with("fur/common.wgsl") {
+            continue;
+        }
+        let src = source_file(&path)?;
+        if !src.contains("psurf::specular_with_geometric_normal(") {
+            continue;
+        }
+        assert!(
+            src.contains("furl::shade_specular_clustered("),
+            "{label} must route core FurFX lighting through fur::lighting"
+        );
+        for forbidden in [
+            "brdf::d_ggx",
+            "brdf::v_smith_ggx_correlated",
+            "brdf::f_schlick",
+            "rprobe::indirect_specular_with_energy",
+            "brdf::specular_ao_lagarde",
+        ] {
+            assert!(
+                !src.contains(forbidden),
+                "{label} must not duplicate PBS BRDF feature `{forbidden}`"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn shared_pbs_surface_roots_pass_geometric_normals() -> io::Result<()> {
+    let sampling = module_source("pbs/sampling.wgsl")?;
+    assert!(
+        sampling.contains(
+            "fn two_sided_geometric_normal(world_n: vec3<f32>, front_facing: bool) -> vec3<f32>"
+        ),
+        "pbs/sampling.wgsl must expose a two-sided geometric normal helper for horizon occlusion"
+    );
+
+    let mut offenders = Vec::new();
+    for root in ["shaders/materials", "shaders/modules/fur"] {
+        for path in wgsl_files_recursive(root)? {
+            let src = source_file(&path)?;
+            if !src.contains("renderide::pbs::surface as psurf") {
+                continue;
+            }
+            if src.contains("psurf::metallic(") || src.contains("psurf::specular(") {
+                offenders.push(file_label(&path));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "shared PBS surface roots must pass a separate geometric normal for reflection-probe horizon occlusion:\n  {}",
+        offenders.join("\n  ")
+    );
+    Ok(())
+}
+
+#[test]
+fn pbs_indirect_ao_uses_multibounce_visibility() -> io::Result<()> {
+    let brdf_src = module_source("pbs/brdf.wgsl")?;
+    for required in [
+        "fn multi_bounce_visibility(visibility: f32, albedo: vec3<f32>) -> vec3<f32>",
+        "let a = 2.0404 * clamped_albedo - vec3<f32>(0.3324);",
+        "let b = -4.7951 * clamped_albedo + vec3<f32>(0.6417);",
+        "let c = 2.7552 * clamped_albedo + vec3<f32>(0.6903);",
+        "fn indirect_diffuse_visibility(visibility: f32, diffuse_color: vec3<f32>) -> vec3<f32>",
+        "return multi_bounce_visibility(visibility, diffuse_color);",
+        "fn indirect_specular_visibility(",
+        "let single_bounce = specular_ao_lagarde(n_dot_v, visibility, perceptual_roughness);",
+        "return multi_bounce_visibility(single_bounce, f0);",
+        "let visibility = indirect_diffuse_visibility(occlusion, diffuse_color);",
+        "return ambient * diffuse_color * energy_scale * visibility;",
+    ] {
+        assert!(
+            brdf_src.contains(required),
+            "pbs/brdf.wgsl must contain `{required}`"
+        );
+    }
+
+    let lighting_src = module_source("pbs/lighting.wgsl")?;
+    for required in [
+        "let specular_visibility =\n        brdf::indirect_specular_visibility(n_dot_v, s.occlusion, indirect_roughness, specular_color);",
+        "let specular_visibility =\n        brdf::indirect_specular_visibility(n_dot_v, s.occlusion, indirect_roughness, s.specular_color);",
+        "specular_energy * specular_visibility",
+    ] {
+        assert!(
+            lighting_src.contains(required),
+            "pbs/lighting.wgsl must contain `{required}`"
+        );
+    }
+    assert!(
+        !lighting_src.contains("let specular_occlusion = brdf::specular_ao_lagarde"),
+        "PBS clustered lighting should route specular AO through multi-bounce visibility"
+    );
     Ok(())
 }
 
@@ -666,32 +1048,30 @@ fn pbs_standard_parallax_uses_tangent_space_view_dir() -> io::Result<()> {
         );
     }
 
+    let standard_src = module_source("pbs/standard.wgsl")?;
+    for required in [
+        "#import renderide::pbs::parallax as ppar",
+        "ts::sample_tex_2d(parallax_map, parallax_sampler, uv, parallax_lod_bias).g",
+        "ppar::unity_parallax_offset(h, parallax, world_pos, world_n, world_t, view_layer)",
+    ] {
+        assert!(
+            standard_src.contains(required),
+            "pbs/standard.wgsl should contain `{required}`"
+        );
+    }
+
     for file_name in ["pbsmetallic.wgsl", "pbsspecular.wgsl"] {
         let src = material_source(file_name)?;
         assert!(
-            src.contains("#import renderide::pbs::parallax as ppar"),
-            "{file_name} should use the shared parallax helper"
-        );
-        assert!(
-            src.contains(
-                "ts::sample_tex_2d(_ParallaxMap, _ParallaxMap_sampler, uv, mat._ParallaxMap_LodBias).g"
-            ),
-            "{file_name} should sample Unity Standard parallax height from the green channel"
-        );
-        assert!(
-            src.contains(
-                "ppar::unity_parallax_offset(h, mat._Parallax, world_pos, world_n, world_t, view_layer)"
-            ),
-            "{file_name} should offset parallax UVs from tangent-space view direction"
-        );
-        assert!(
-            src.contains("uv_with_parallax(uv_base, world_pos, world_n, world_t, view_layer)"),
-            "{file_name} should pass the surface frame into parallax sampling"
+            src.contains("#import renderide::pbs::standard as pstd")
+                && src.contains("pstd::apply_parallax("),
+            "{file_name} should route Standard parallax through the shared standard module"
         );
 
         for forbidden in [
             "view_dir.xy / max(abs(view_dir.z), 0.25)",
             "rg::view_dir_for_world_pos(world_pos, view_layer)",
+            "fn uv_with_parallax(",
         ] {
             assert!(
                 !src.contains(forbidden),

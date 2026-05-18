@@ -4,7 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::directives::{
-    TextureDefaultDirective, parse_source_alias, parse_texture_default_directives,
+    MaterialDefaultDirective, TextureDefaultDirective, parse_material_default_directives,
+    parse_source_alias, parse_texture_default_directives,
 };
 use super::error::BuildError;
 use super::model::{ShaderJob, ShaderSourceClass};
@@ -17,6 +18,8 @@ pub(super) struct ShaderCompileSource {
     pub file_path: String,
     /// Texture defaults parsed from the source or merged from alias + wrapper directives.
     pub texture_defaults: Vec<TextureDefaultDirective>,
+    /// Material uniform defaults parsed from the source or merged from alias + wrapper directives.
+    pub material_defaults: Vec<MaterialDefaultDirective>,
 }
 
 /// Lists every `.wgsl` file directly under `dir`, sorted lexicographically.
@@ -68,6 +71,24 @@ fn merge_texture_defaults(
     base
 }
 
+/// Merges material uniform defaults, with wrapper directives overriding alias defaults.
+fn merge_material_defaults(
+    mut base: Vec<MaterialDefaultDirective>,
+    overrides: Vec<MaterialDefaultDirective>,
+) -> Vec<MaterialDefaultDirective> {
+    for override_default in overrides {
+        if let Some(existing) = base
+            .iter_mut()
+            .find(|existing| existing.property == override_default.property)
+        {
+            *existing = override_default;
+        } else {
+            base.push(override_default);
+        }
+    }
+    base
+}
+
 /// Loads the WGSL source used for composition, following `//#source_alias` when present.
 pub(super) fn shader_source_for_compile(
     source_path: &Path,
@@ -81,11 +102,14 @@ pub(super) fn shader_source_for_compile(
         ))
     })?;
     let wrapper_defaults = parse_texture_default_directives(&wrapper_source, wrapper_file_path)?;
+    let wrapper_material_defaults =
+        parse_material_default_directives(&wrapper_source, wrapper_file_path)?;
     let Some(alias) = parse_source_alias(&wrapper_source, wrapper_file_path)? else {
         return Ok(ShaderCompileSource {
             source: wrapper_source,
             file_path: wrapper_file_path.to_string(),
             texture_defaults: wrapper_defaults,
+            material_defaults: wrapper_material_defaults,
         });
     };
     let alias_path = source_path.with_file_name(format!("{alias}.wgsl"));
@@ -103,10 +127,16 @@ pub(super) fn shader_source_for_compile(
         ))
     })?;
     let alias_defaults = parse_texture_default_directives(&alias_source, alias_file_path)?;
+    let alias_material_defaults =
+        parse_material_default_directives(&alias_source, alias_file_path)?;
     Ok(ShaderCompileSource {
         source: alias_source,
         file_path: alias_file_path.to_string(),
         texture_defaults: merge_texture_defaults(alias_defaults, wrapper_defaults),
+        material_defaults: merge_material_defaults(
+            alias_material_defaults,
+            wrapper_material_defaults,
+        ),
     })
 }
 
@@ -191,6 +221,59 @@ mod tests {
                 (
                     "_OtherTex",
                     super::super::directives::TextureDefaultKind::Gray
+                ),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_alias_inherits_and_overrides_material_defaults() -> Result<(), BuildError> {
+        let root = tempfile::tempdir()?;
+        let alias_path = root.path().join("base.wgsl");
+        let wrapper_path = root.path().join("wrapper.wgsl");
+        fs::write(
+            &alias_path,
+            r#"
+//#mat_default _GlossMapScale float 1.0
+//#mat_default _Tint vec4 1.0 1.0 1.0 1.0
+"#,
+        )?;
+        fs::write(
+            &wrapper_path,
+            r#"
+//#source_alias base
+//#mat_default _GlossMapScale float 0.5
+//#mat_default _OcclusionStrength float 1.0
+"#,
+        )?;
+
+        let source = shader_source_for_compile(&wrapper_path)?;
+
+        assert_eq!(source.file_path, alias_path.to_string_lossy().as_ref());
+        assert_eq!(
+            source
+                .material_defaults
+                .iter()
+                .map(|d| (d.property.as_str(), d.value))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "_GlossMapScale",
+                    super::super::directives::MaterialDefaultValue::float_bits(0.5f32.to_bits()),
+                ),
+                (
+                    "_Tint",
+                    super::super::directives::MaterialDefaultValue::vec4_bits([
+                        1.0f32.to_bits(),
+                        1.0f32.to_bits(),
+                        1.0f32.to_bits(),
+                        1.0f32.to_bits(),
+                    ]),
+                ),
+                (
+                    "_OcclusionStrength",
+                    super::super::directives::MaterialDefaultValue::float_bits(1.0f32.to_bits()),
                 ),
             ]
         );

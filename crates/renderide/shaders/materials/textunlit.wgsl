@@ -8,6 +8,9 @@
 
 
 //#texture_default _FontAtlas white
+//#mat_default _OutlineColor vec4 1.0 1.0 1.0 0.0
+//#mat_default _Range vec4 0.001 0.001 0.0 0.0
+//#mat_default _TintColor vec4 1.0 1.0 1.0 1.0
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
@@ -77,7 +80,7 @@ fn vs_main(
     return out;
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
     let vtx_color = vout.vtx_color;

@@ -49,14 +49,14 @@ fn assert_resolved_pass(
     assert_eq!(bias.slope_scale, -2.0);
 }
 
-/// Verifies each pass kind admits only the material overrides listed in the policy table.
+/// Verifies each pass descriptor admits only the material overrides listed in the policy table.
 #[test]
-fn pass_policy_resolves_expected_material_overrides_by_kind() {
+fn pass_policy_resolves_expected_material_overrides_by_descriptor() {
     let disabled_depth = override_state(false);
     let enabled_depth = override_state(true);
 
     assert_resolved_pass(
-        pass_from_kind(PassKind::DepthPrepass, "fs_depth_only"),
+        depth_prepass("fs_depth_only"),
         disabled_depth,
         COLOR_WRITES_NONE,
         true,
@@ -64,7 +64,7 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
         None,
     );
     assert_resolved_pass(
-        pass_from_kind(PassKind::Stencil, "fs_stencil"),
+        stencil_pass("fs_stencil"),
         enabled_depth,
         wgpu::ColorWrites::ALL,
         true,
@@ -72,7 +72,7 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
         None,
     );
     assert_resolved_pass(
-        pass_from_kind(PassKind::Forward, "fs_main"),
+        forward_pass("fs_main"),
         disabled_depth,
         wgpu::ColorWrites::ALL,
         false,
@@ -80,7 +80,7 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
         None,
     );
     assert_resolved_pass(
-        pass_from_kind(PassKind::ForwardFilter, "fs_main"),
+        forward_filter_pass("fs_main"),
         disabled_depth,
         wgpu::ColorWrites::ALL,
         false,
@@ -88,7 +88,7 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
         None,
     );
     assert_resolved_pass(
-        pass_from_kind(PassKind::ForwardTwoSided, "fs_main"),
+        forward_two_sided_pass("fs_main"),
         disabled_depth,
         wgpu::ColorWrites::ALL,
         false,
@@ -96,7 +96,7 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
         None,
     );
     assert_resolved_pass(
-        pass_from_kind(PassKind::ForwardTransparentCullFront, "fs_back_faces"),
+        forward_transparent_cull_front_pass("fs_back_faces"),
         disabled_depth,
         wgpu::ColorWrites::ALL,
         false,
@@ -104,7 +104,7 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
         Some(wgpu::Face::Front),
     );
     assert_resolved_pass(
-        pass_from_kind(PassKind::Outline, "fs_outline"),
+        outline_pass("fs_outline"),
         disabled_depth,
         wgpu::ColorWrites::ALL,
         false,
@@ -112,14 +112,14 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
         Some(wgpu::Face::Front),
     );
     assert_resolved_pass(
-        pass_from_kind(PassKind::OverlayBehind, "fs_overlay"),
+        overlay_behind_pass("fs_overlay"),
         disabled_depth,
         wgpu::ColorWrites::ALL,
         false,
         wgpu::CompareFunction::Less,
         None,
     );
-    let overlay_always = pass_from_kind(PassKind::OverlayAlways, "fs_overlay");
+    let overlay_always = overlay_always_pass("fs_overlay");
     assert_eq!(
         overlay_always.resolved_color_writes(enabled_depth),
         wgpu::ColorWrites::ALL
@@ -142,7 +142,7 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
         wgpu::DepthBiasState::default()
     );
 
-    let fur_blend = pass_from_kind(PassKind::ForwardAlphaBlendZWrite, "fs_fur");
+    let fur_blend = forward_alpha_blend_zwrite_pass("fs_fur");
     assert_eq!(
         fur_blend.resolved_color_writes(disabled_depth),
         wgpu::ColorWrites::ALL
@@ -157,7 +157,7 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
 /// Verifies fixed transparent RGB passes preserve Unity-authored state even when host overrides exist.
 #[test]
 fn transparent_rgb_pass_ignores_material_render_state_overrides() {
-    let pass = pass_from_kind(PassKind::TransparentRgb, "fs_circle");
+    let pass = transparent_rgb_pass("fs_circle");
     let override_state = override_state(true);
 
     assert_eq!(
@@ -191,7 +191,7 @@ fn transparent_rgb_pass_ignores_material_render_state_overrides() {
 #[test]
 fn volume_front_pass_policy_preserves_authored_volume_state() {
     let state = override_state(true);
-    let pass = pass_from_kind(PassKind::VolumeFront, "fs_volume");
+    let pass = volume_front_pass("fs_volume");
 
     assert_eq!(pass.resolved_color_writes(state), wgpu::ColorWrites::ALL);
     assert!(!pass.resolved_depth_write(state));
@@ -228,6 +228,108 @@ fn volume_stems_use_volume_front_pass() {
     }
 }
 
+/// Asserts that a UI unlit stem uses material-controlled filter pass state.
+fn assert_ui_unlit_filter_pass(stem: &str) {
+    let passes = crate::embedded_shaders::embedded_target_passes(stem);
+    assert_eq!(passes.len(), 1, "{stem}");
+    assert_eq!(passes[0].name, "forward_filter", "{stem}");
+    assert_eq!(
+        passes[0].material_state,
+        MaterialPassState::Filter,
+        "{stem}"
+    );
+    assert_eq!(
+        passes[0].depth_compare_domain,
+        MaterialDepthCompareDomain::FrooxZTest,
+        "{stem}"
+    );
+
+    let materialized = materialized_embedded_pass_for_blend_mode(
+        stem,
+        &passes[0],
+        MaterialBlendMode::UnityBlend { src: 1, dst: 0 },
+    );
+    let blend = materialized.blend.expect(stem);
+    assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One, "{stem}");
+    assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::Zero, "{stem}");
+    assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::One, "{stem}");
+    assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::One, "{stem}");
+    assert_eq!(blend.alpha.operation, wgpu::BlendOperation::Max, "{stem}");
+
+    let zwrite_off = MaterialRenderState {
+        depth_write: Some(false),
+        ..MaterialRenderState::default()
+    };
+    assert!(!materialized.resolved_depth_write(zwrite_off), "{stem}");
+
+    let less_or_equal_ztest = MaterialRenderState {
+        depth_compare: Some(2),
+        ..MaterialRenderState::default()
+    };
+    assert_eq!(
+        materialized.resolved_depth_compare(less_or_equal_ztest),
+        wgpu::CompareFunction::GreaterEqual,
+        "{stem}"
+    );
+
+    let always_ztest = MaterialRenderState {
+        depth_compare: Some(ZTEST_ALWAYS),
+        ..MaterialRenderState::default()
+    };
+    assert_eq!(
+        materialized.resolved_depth_compare(always_ztest),
+        wgpu::CompareFunction::Always,
+        "{stem}"
+    );
+
+    let depth_offset = MaterialRenderState {
+        depth_offset: MaterialDepthOffsetState::new(1.0, 100),
+        ..MaterialRenderState::default()
+    };
+    let bias = materialized.resolved_depth_bias(depth_offset);
+    assert_eq!(bias.constant, -100, "{stem}");
+    assert_eq!(bias.slope_scale, -1.0, "{stem}");
+}
+
+/// Verifies UI unlit stems keep Unity-style filter render state.
+#[test]
+fn ui_unlit_stems_use_filter_pass_material_state() {
+    for stem in [
+        "ui_unlit_default",
+        "ui_textunlit_default",
+        "ui_circlesegment_default",
+    ] {
+        assert_ui_unlit_filter_pass(stem);
+    }
+}
+
+/// Verifies opaque PBS DualSided stems use their source-authored material cull fallback.
+#[test]
+fn pbs_dualsided_opaque_stems_apply_material_cull_overrides() {
+    for stem in ["pbsdualsided_default", "pbsdualsidedspecular_default"] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(passes.len(), 1, "{stem} should declare one forward pass");
+        assert_eq!(passes[0].name, "forward_two_sided", "{stem}");
+        assert_eq!(passes[0].cull_mode, None, "{stem}");
+
+        for (cull_override, expected_cull) in [
+            (MaterialCullOverride::Front, Some(wgpu::Face::Front)),
+            (MaterialCullOverride::Back, Some(wgpu::Face::Back)),
+            (MaterialCullOverride::Off, None),
+        ] {
+            let state = MaterialRenderState {
+                cull_override,
+                ..MaterialRenderState::default()
+            };
+            assert_eq!(
+                passes[0].resolved_cull_mode(state),
+                expected_cull,
+                "{stem} must apply host {cull_override:?} over authored Cull Off"
+            );
+        }
+    }
+}
+
 /// Verifies PBSRim transparent zwrite variants preserve their depth-only stem before transparent color.
 #[test]
 fn pbsrim_zwrite_stems_keep_depth_prepass_before_transparent_forward() {
@@ -238,7 +340,8 @@ fn pbsrim_zwrite_stems_keep_depth_prepass_before_transparent_forward() {
         let passes = crate::embedded_shaders::embedded_target_passes(stem);
         assert_eq!(passes.len(), 2, "{stem} should declare two passes");
         assert_eq!(passes[0].name, "depth_prepass");
-        assert_eq!(passes[1].name, "forward_transparent");
+        assert_eq!(passes[1].name, "forward_transparent_cull_back");
+        assert_eq!(passes[1].cull_mode, Some(wgpu::Face::Back), "{stem}");
 
         let state = MaterialRenderState {
             color_mask: Some(15),
@@ -257,33 +360,6 @@ fn pbsrim_zwrite_stems_keep_depth_prepass_before_transparent_forward() {
         );
         assert!(!forward.resolved_depth_write(state), "{stem}");
         assert!(forward.blend.is_some(), "{stem}");
-    }
-}
-
-/// Verifies opaque PBS DualSided stems preserve authored Cull Off regardless of host `_Cull`.
-#[test]
-fn pbs_dualsided_opaque_stems_preserve_authored_cull_off() {
-    for stem in ["pbsdualsided_default", "pbsdualsidedspecular_default"] {
-        let passes = crate::embedded_shaders::embedded_target_passes(stem);
-        assert_eq!(passes.len(), 1, "{stem} should declare one forward pass");
-        assert_eq!(passes[0].name, "forward_two_sided", "{stem}");
-        assert_eq!(passes[0].cull_mode, None, "{stem}");
-
-        for cull_override in [
-            MaterialCullOverride::Front,
-            MaterialCullOverride::Back,
-            MaterialCullOverride::Off,
-        ] {
-            let state = MaterialRenderState {
-                cull_override,
-                ..MaterialRenderState::default()
-            };
-            assert_eq!(
-                passes[0].resolved_cull_mode(state),
-                None,
-                "{stem} must keep authored Cull Off when host sends {cull_override:?}"
-            );
-        }
     }
 }
 
@@ -315,8 +391,8 @@ fn assert_one_transparent_forward_pass(stem: &str) {
     assert_eq!(opaque.write_mask, wgpu::ColorWrites::ALL, "{stem}");
 }
 
-/// Asserts that a shader stem keeps its depth prepass before transparent color output.
-fn assert_depth_prepass_before_transparent_forward(stem: &str) {
+/// Asserts that a shader stem keeps its depth prepass before back-culled transparent color output.
+fn assert_depth_prepass_before_back_culled_transparent_forward(stem: &str) {
     let passes = crate::embedded_shaders::embedded_target_passes(stem);
     assert_eq!(
         passes.len(),
@@ -326,7 +402,8 @@ fn assert_depth_prepass_before_transparent_forward(stem: &str) {
     assert_eq!(passes[0].name, "depth_prepass", "{stem}");
     assert!(passes[0].depth_write, "{stem}");
     assert_eq!(passes[0].write_mask, COLOR_WRITES_NONE, "{stem}");
-    assert_eq!(passes[1].name, "forward_transparent", "{stem}");
+    assert_eq!(passes[1].name, "forward_transparent_cull_back", "{stem}");
+    assert_eq!(passes[1].cull_mode, Some(wgpu::Face::Back), "{stem}");
     assert!(!passes[1].depth_write, "{stem}");
     assert!(passes[1].blend.is_some(), "{stem}");
     assert_eq!(
@@ -421,8 +498,6 @@ fn pbs_transparent_stems_keep_transparent_pass_defaults() {
         "pbsdisplacespeculartransparent_default",
         "pbsdistancelerptransparent_default",
         "pbsdistancelerpspeculartransparent_default",
-        "pbsrimtransparent_default",
-        "pbsrimtransparentspecular_default",
         "pbsslicetransparent_default",
         "pbsslicetransparentspecular_default",
         "pbstriplanartransparent_default",
@@ -435,10 +510,12 @@ fn pbs_transparent_stems_keep_transparent_pass_defaults() {
         "pbsrimtransparentzwrite_default",
         "pbsrimtransparentzwritespecular_default",
     ] {
-        assert_depth_prepass_before_transparent_forward(stem);
+        assert_depth_prepass_before_back_culled_transparent_forward(stem);
     }
 
     for stem in [
+        "pbsrimtransparent_default",
+        "pbsrimtransparentspecular_default",
         "pbsvertexcolortransparent_default",
         "pbsvertexcolortransparentspecular_default",
     ] {

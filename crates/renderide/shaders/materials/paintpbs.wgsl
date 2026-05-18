@@ -6,6 +6,15 @@
 
 //#texture_default _MainTex white
 //#texture_default _PaintTex white
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _OutputScale float 10.0
+//#mat_default _PaintGain float 1.0
+//#mat_default _PaintTexOffsets vec4 0.0 0.333 0.5 0.777
+//#mat_default _PaintTexScales vec4 1.0 0.95 0.89 1.13
+//#mat_default _PaintTexShifts vec4 -0.7 0.2 -0.4 1.0
+//#mat_default _Pow float 1.0
+//#mat_default _Glossiness float 0.5
+//#mat_default _SideFadeSize float 0.1
 
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv
@@ -104,13 +113,14 @@ fn shade(
     let smoothness = clamp(mat._Glossiness, 0.0, 1.0);
     let roughness = psamp::roughness_from_smoothness(smoothness);
     let n = normalize(world_n);
-    let surface = psurf::metallic(
+    let surface = psurf::metallic_with_geometric_normal(
         base_color,
         strength,
         metallic,
         roughness,
         1.0,
         n,
+        world_n,
         vec3<f32>(0.0),
     );
     return vec4<f32>(
@@ -125,7 +135,7 @@ fn shade(
     );
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

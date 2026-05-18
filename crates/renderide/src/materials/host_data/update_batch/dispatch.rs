@@ -27,18 +27,14 @@ fn apply_set_float_array_from_batch<L: MaterialBatchBlobLoader + ?Sized>(
         return;
     };
     let len = len.max(0) as usize;
-    let mut out: Vec<f32> = Vec::new();
-    if options.persist_extended_payloads {
-        out.reserve(len.min(MATERIAL_BATCH_MAX_FLOAT_ARRAY_LEN));
-    }
-    for _ in 0..len {
-        let Some(f) = p.next_float() else {
-            break;
-        };
-        if options.persist_extended_payloads && out.len() < MATERIAL_BATCH_MAX_FLOAT_ARRAY_LEN {
-            out.push(f);
-        }
-    }
+    let retained_len = if options.persist_extended_payloads {
+        MATERIAL_BATCH_MAX_FLOAT_ARRAY_LEN
+    } else {
+        0
+    };
+    let Some(out) = p.next_float_array_prefix(len, retained_len) else {
+        return;
+    };
     if options.persist_extended_payloads && !out.is_empty() {
         set_property_on_batch_target(
             store,
@@ -61,18 +57,14 @@ fn apply_set_float4_array_from_batch<L: MaterialBatchBlobLoader + ?Sized>(
         return;
     };
     let len = len.max(0) as usize;
-    let mut out: Vec<[f32; 4]> = Vec::new();
-    if options.persist_extended_payloads {
-        out.reserve(len.min(MATERIAL_BATCH_MAX_FLOAT4_ARRAY_LEN));
-    }
-    for _ in 0..len {
-        let Some(v) = p.next_float4() else {
-            break;
-        };
-        if options.persist_extended_payloads && out.len() < MATERIAL_BATCH_MAX_FLOAT4_ARRAY_LEN {
-            out.push(v);
-        }
-    }
+    let retained_len = if options.persist_extended_payloads {
+        MATERIAL_BATCH_MAX_FLOAT4_ARRAY_LEN
+    } else {
+        0
+    };
+    let Some(out) = p.next_float4_array_prefix(len, retained_len) else {
+        return;
+    };
     if options.persist_extended_payloads && !out.is_empty() {
         set_property_on_batch_target(
             store,

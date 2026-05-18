@@ -15,19 +15,18 @@ fn get_draw(instance_idx: u32) -> dt::PerDrawUniforms {
     return instances[instance_idx];
 }
 
-/// `true` when the bound position stream has already been transformed into world space.
-fn position_stream_is_world_space(draw: dt::PerDrawUniforms) -> bool {
-    return dt::position_stream_is_world_space(draw);
+fn local_reflection_probe_indices(draw: dt::PerDrawUniforms) -> vec4<u32> {
+    return dt::local_reflection_probe_indices(draw);
 }
 
-fn reflection_probe_indices(draw: dt::PerDrawUniforms) -> vec2<u32> {
-    return dt::reflection_probe_indices(draw);
+fn fallback_reflection_probe_index(draw: dt::PerDrawUniforms) -> u32 {
+    return dt::fallback_reflection_probe_index(draw);
 }
 
-fn reflection_probe_second_weight(draw: dt::PerDrawUniforms) -> f32 {
-    return dt::reflection_probe_second_weight(draw);
+fn reflection_probe_importance_mask(draw: dt::PerDrawUniforms) -> u32 {
+    return dt::reflection_probe_importance_mask(draw);
 }
 
-fn reflection_probe_hit_count(draw: dt::PerDrawUniforms) -> u32 {
-    return dt::reflection_probe_hit_count(draw);
+fn has_reflection_probe_selection(draw: dt::PerDrawUniforms) -> bool {
+    return dt::has_reflection_probe_selection(draw);
 }

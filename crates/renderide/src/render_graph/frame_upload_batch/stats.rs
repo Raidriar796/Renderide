@@ -61,8 +61,9 @@ impl FrameUploadBatchStats {
 
 /// Upload command buffer plus the traffic statistics that produced it.
 pub struct FrameUploadFlush {
-    /// Recorded copy command buffer for staged writes.
-    pub command_buffer: wgpu::CommandBuffer,
+    /// Recorded copy command buffer for staged writes, or `None` when every write was replayed
+    /// through the queue fallback path.
+    pub command_buffer: Option<wgpu::CommandBuffer>,
     /// Callback installed after submit so a persistent upload slot is recycled only after GPU use.
     pub on_submitted_work_done: Option<Box<dyn FnOnce() + Send + 'static>>,
     /// Upload traffic and finish timing for diagnostics.

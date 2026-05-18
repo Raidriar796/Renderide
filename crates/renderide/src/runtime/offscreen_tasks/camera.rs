@@ -259,11 +259,6 @@ impl RendererRuntime {
             .pending_camera_render_tasks
             .extend(tasks.iter().cloned());
         self.set_pending_camera_readbacks(self.tick_state.pending_camera_render_tasks.len());
-        logger::debug!(
-            "queued {} CameraRenderTask readback(s); pending={}",
-            tasks.len(),
-            self.tick_state.pending_camera_render_tasks.len()
-        );
     }
 
     /// Drains queued camera readback tasks before the next host begin-frame is sent.
@@ -324,11 +319,6 @@ impl RendererRuntime {
         }
         diagnostics.set_pending_camera_readbacks(0);
         diagnostics.note_camera_readback_results(stats.completed, stats.failed);
-        logger::debug!(
-            "drained CameraRenderTask readbacks: completed={} failed={}",
-            stats.completed,
-            stats.failed
-        );
     }
 }
 
@@ -503,7 +493,7 @@ fn render_camera_task_offscreen(
 }
 
 fn readback_camera_task_texture(
-    gpu: &GpuContext,
+    gpu: &mut GpuContext,
     color_texture: &wgpu::Texture,
 ) -> Result<Vec<u8>, CameraReadbackError> {
     profiling::scope!("camera_task::gpu_copy_and_map");
@@ -572,7 +562,7 @@ fn create_readback_buffer(gpu: &GpuContext, layout: &ReadbackLayout) -> wgpu::Bu
 }
 
 fn submit_texture_to_buffer_copy(
-    gpu: &GpuContext,
+    gpu: &mut GpuContext,
     color_texture: &wgpu::Texture,
     layout: &ReadbackLayout,
     readback: &wgpu::Buffer,
@@ -584,6 +574,9 @@ fn submit_texture_to_buffer_copy(
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("renderide-camera-task-readback"),
         });
+    let copy_query = gpu
+        .gpu_profiler_mut()
+        .map(|p| p.begin_query("camera_task::texture_to_buffer_copy", &mut encoder));
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture: color_texture,
@@ -605,6 +598,12 @@ fn submit_texture_to_buffer_copy(
             depth_or_array_layers: 1,
         },
     );
+    if let Some(query) = copy_query
+        && let Some(prof) = gpu.gpu_profiler_mut()
+    {
+        prof.end_query(&mut encoder, query);
+        prof.resolve_queries(&mut encoder);
+    }
     let command_buffer = {
         profiling::scope!("CommandEncoder::finish::camera_task_readback");
         encoder.finish()

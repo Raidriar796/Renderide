@@ -26,7 +26,7 @@ fn vs_main(
     return out;
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
     discard;

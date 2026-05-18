@@ -11,6 +11,11 @@
 
 //#texture_default _MainTex white
 //#texture_default _DepthTex black
+//#mat_default _Angle vec4 90.0 60.0 0.0 0.0
+//#mat_default _DepthTo float 1.0
+//#mat_default _DiscardOffset float 0.01
+//#mat_default _DiscardThreshold float 0.01
+//#mat_default _FarClip float 1.0
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
@@ -130,7 +135,7 @@ fn vs_main(
     return out;
 }
 
-//#pass forward_two_sided
+//#pass type=forward name=forward_two_sided cull=off
 @fragment
 fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
     if (vout.diff > mat._DiscardThreshold || vout.norm_depth < mat._NearClip || vout.norm_depth > mat._FarClip) {

@@ -55,7 +55,7 @@ fn hdr_uncompress_nonnegative(rgb: vec3<f32>) -> vec3<f32> {
     return rgb / denom;
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,

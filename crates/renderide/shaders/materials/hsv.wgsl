@@ -1,6 +1,9 @@
 //! Grab-pass HSV offset/multiply filter (`Shader "Filters/HSV"`).
 
 
+//#mat_default _HSVMul vec4 1.0 1.0 1.0 1.0
+//#mat_default _HSVOffset vec4 0.2 0.2 0.2 0.0
+
 #import renderide::post::filter_math as fm
 #import renderide::post::filter_vertex as fv
 #import renderide::post::filter_common as fc
@@ -45,7 +48,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward_filter
+//#pass type=forward name=forward_filter blend=material_filter
 @fragment
 fn fs_main(in: fv::RectVertexOutput) -> @location(0) vec4<f32> {
     fc::discard_rect_if_enabled(in.obj_xy, mat._Rect, kw_RECTCLIP());

@@ -51,7 +51,7 @@ impl VramAccounting {
 
     /// Resident bytes for meshes only.
     #[cfg(test)]
-    pub(crate) fn mesh_resident_bytes(&self) -> u64 {
+    pub fn mesh_resident_bytes(&self) -> u64 {
         self.mesh_resident_bytes
     }
 

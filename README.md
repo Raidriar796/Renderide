@@ -4,6 +4,8 @@ A modern Rust + wgpu renderer for [Resonite](https://store.steampowered.com/app/
 
 Also available as an [AUR package](https://aur.archlinux.org/packages/renderide-git).
 
+If you're interested in supporting my work, please consider donating on [Ko-Fi](https://ko-fi.com/DoubleStyx) or [GitHub Sponsors](https://github.com/sponsors/DoubleStyx).
+
 ## Status
 
 Experimental: performance, stability, and platform support are still evolving.
@@ -43,7 +45,7 @@ The launcher will start the Resonite host and connect Renderide automatically.
 
 - Enable validation layers in the config hud to get more detailed error messages for GPU crashes. Requires a restart.
 
-- Renderer logs are timestamped files under `<logs-root>/renderer/`; local checkout runs normally use this repository's `logs/renderer/` folder. Release binaries use the current user's platform log directory (`$XDG_STATE_HOME/renderide/logs` or `~/.local/state/renderide/logs` on Linux, `~/Library/Logs/Renderide` on macOS, `%LOCALAPPDATA%\Renderide\logs` on Windows). Set `RENDERIDE_LOGS_ROOT` to override the root for all component logs. The Renderer config HUD also shows the selected log folder and includes an "Open log folder" button.
+- Logs are timestamped files under a selected logs root. Source builds normally resolve the active repository and write renderer logs to `logs/renderer/`. Installed release binaries fall back to the current user's platform log root: `$XDG_STATE_HOME/renderide/logs` or `~/.local/state/renderide/logs` on Linux, `~/Library/Logs/Renderide` on macOS, and `%LOCALAPPDATA%\Renderide\logs` on Windows. Set `RENDERIDE_LOGS_ROOT` to choose the root explicitly; component logs then live under `renderer/`, `bootstrapper/`, `host/`, `renderer-test/`, and `SharedTypeGenerator/`. The Renderer config HUD also shows the selected log folder and includes an "Open log folder" button.
 
 - You can add Steam-style launch arguments after the launcher to enable mods: `<path-to-renderide> -LoadAssembly Libraries/ResoniteModLoader.dll`
 
@@ -168,6 +170,12 @@ Linux, macOS, and Windows are all tier-1 targets and exercised in CI ([`.github/
 Contributions are welcome. The workspace builds with the standard Cargo commands listed above; lints (`cargo clippy --all-targets --all-features`) and formatting (`cargo fmt`, plus `taplo fmt` when editing `Cargo.toml`) are expected to be clean before opening a pull request, and CI runs the same checks across all three platforms.
 
 Read [`CONTRIBUTING.md`](CONTRIBUTING.md) to learn how to get started.
+
+## AI Policy
+
+Renderide does not accept AI-generated or AI-assisted contributions. Source code, shaders, documentation, tests, issues, pull requests, and review comments submitted to this repository must be authored by the human contributor without generative AI tools. Contributors found submitting AI-generated material or using AI to participate in the project may be blocked from future contribution.
+
+Renderide depends on upstream projects with their own contribution rules. For example, [`wgpu` explicitly allows LLM/AI-generated code](https://github.com/gfx-rs/wgpu/blob/trunk/CONTRIBUTING.md#llms-ai) when the pull request author accepts full ownership of the change. Renderide cannot impose this policy on upstream projects or dependencies; using those dependencies does not change the policy for contributions to this repository.
 
 ## License
 

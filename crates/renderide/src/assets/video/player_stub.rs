@@ -5,6 +5,7 @@
 //! `None`, so `video_players` stays empty and the integrator's polling loop
 //! has nothing to drive.
 
+use crate::gpu::GpuQueueAccessGate;
 use renderide_shared::ipc::DualQueueIpc;
 use renderide_shared::{
     VideoTextureClockErrorState, VideoTextureLoad, VideoTextureStartAudioTrack, VideoTextureUpdate,
@@ -23,6 +24,7 @@ impl VideoPlayer {
         load: VideoTextureLoad,
         _device: Arc<wgpu::Device>,
         _queue: Arc<wgpu::Queue>,
+        _queue_access_gate: GpuQueueAccessGate,
     ) -> Option<Self> {
         logger::debug!(
             "video texture {}: playback skipped (renderide built without `video-textures` feature)",

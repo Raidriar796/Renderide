@@ -18,6 +18,14 @@
 //#texture_default _MetallicMap black
 //#texture_default _DetailAlbedoMap gray
 //#texture_default _DetailNormalMap bump
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _DetailNormalMapScale float 1.0
+//#mat_default _EdgeColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _EdgeEmissionColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _EdgeTransitionEnd float 0.1
+//#mat_default _NormalScale float 1.0
+//#mat_default _AlphaClip float 0.5
+//#mat_default _Glossiness float 0.5
 
 #import renderide::mesh::vertex as mv
 #import renderide::material::variant_bits as vb
@@ -139,7 +147,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
@@ -208,7 +216,16 @@ fn fs_main(
     }
     let edge_emission = mix(emission, mat._EdgeEmissionColor.rgb, edge_lerp);
 
-    let surface = psurf::metallic(base_color, alpha, metallic, roughness, occlusion, n, edge_emission);
+    let surface = psurf::metallic_with_geometric_normal(
+        base_color,
+        alpha,
+        metallic,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        edge_emission,
+    );
     let color = plight::shade_metallic_clustered(
         frag_pos.xy,
         world_pos,

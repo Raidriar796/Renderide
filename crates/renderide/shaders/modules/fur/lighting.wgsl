@@ -75,6 +75,7 @@ fn direct_specular_clustered(
                 s.normal,
                 view_dir,
                 aa_roughness,
+                s.roughness,
                 s.base_color,
                 s.specular_color,
                 s.one_minus_reflectivity,
@@ -85,6 +86,8 @@ fn direct_specular_clustered(
                 light,
                 world_pos,
                 s.normal,
+                view_dir,
+                s.roughness,
                 s.base_color,
                 s.one_minus_reflectivity,
             ) * visibility;
@@ -119,6 +122,7 @@ fn shade_specular_clustered(
             one_minus_reflectivity,
             s.occlusion,
             s.normal,
+            s.geometric_normal,
             s.emission,
         ),
         view_dir,
@@ -128,10 +132,11 @@ fn shade_specular_clustered(
 
     let indirect_specular_enabled =
         rprobe::has_indirect_specular(view_layer, options.glossy_reflections_enabled);
-    let indirect_dfg = brdf::sample_ibl_dfg_lut(s.roughness, n_dot_v);
+    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
+    let indirect_dfg = brdf::sample_ibl_dfg_lut(indirect_roughness, n_dot_v);
     let specular_energy =
         brdf::indirect_specular_energy_from_dfg(indirect_dfg, f0, indirect_specular_enabled);
-    let specular_occlusion = brdf::specular_ao_lagarde(n_dot_v, s.occlusion, s.roughness);
+    let specular_visibility = brdf::indirect_specular_visibility(n_dot_v, s.occlusion, indirect_roughness, f0);
     let ambient_probe = rprobe::indirect_diffuse(world_pos, s.normal, view_layer, options.include_directional);
     let ambient = brdf::indirect_diffuse_specular(
         ambient_probe,
@@ -144,10 +149,11 @@ fn shade_specular_clustered(
     let indirect_specular = rprobe::indirect_specular_with_energy(
         world_pos,
         s.normal,
+        s.geometric_normal,
         view_dir,
-        s.roughness,
-        specular_energy,
-        specular_occlusion,
+        indirect_roughness,
+        specular_energy * specular_visibility,
+        1.0,
         indirect_specular_enabled,
         view_layer,
     );

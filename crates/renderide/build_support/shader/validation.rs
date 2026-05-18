@@ -62,8 +62,8 @@ pub(super) fn validate_entry_points(
             .any(|e| e.stage == ShaderStage::Fragment && e.name == pass.fragment_entry.as_str());
         if !has_vs || !has_fs {
             return Err(BuildError::Message(format!(
-                "{label}: pass `{:?}` expected entry points {} and {} (vertex={has_vs} fragment={has_fs})",
-                pass.kind, pass.vertex_entry, pass.fragment_entry
+                "{label}: pass `{}` ({:?}) expected entry points {} and {} (vertex={has_vs} fragment={has_fs})",
+                pass.name, pass.pass_type, pass.vertex_entry, pass.fragment_entry
             )));
         }
     }
@@ -79,15 +79,15 @@ pub(super) fn validate_pass_interfaces(
     for pass in passes {
         let Some(vertex) = find_entry_point(module, ShaderStage::Vertex, &pass.vertex_entry) else {
             return Err(BuildError::Message(format!(
-                "{label}: pass `{:?}` missing vertex entry point {}",
-                pass.kind, pass.vertex_entry
+                "{label}: pass `{}` ({:?}) missing vertex entry point {}",
+                pass.name, pass.pass_type, pass.vertex_entry
             )));
         };
         let Some(fragment) = find_entry_point(module, ShaderStage::Fragment, &pass.fragment_entry)
         else {
             return Err(BuildError::Message(format!(
-                "{label}: pass `{:?}` missing fragment entry point {}",
-                pass.kind, pass.fragment_entry
+                "{label}: pass `{}` ({:?}) missing fragment entry point {}",
+                pass.name, pass.pass_type, pass.fragment_entry
             )));
         };
         validate_pass_interface_pair(module, label, pass, vertex, fragment)?;
@@ -118,16 +118,17 @@ fn validate_pass_interface_pair(
     for (location, fragment_slot) in fragment_inputs {
         let Some(vertex_slot) = vertex_outputs.get(&location) else {
             return Err(BuildError::Message(format!(
-                "{label}: pass `{:?}` fragment entry {} reads @location({location}), \
+                "{label}: pass `{}` ({:?}) fragment entry {} reads @location({location}), \
                  but vertex entry {} does not write it",
-                pass.kind, fragment.name, vertex.name
+                pass.name, pass.pass_type, fragment.name, vertex.name
             )));
         };
         if module.types[vertex_slot.ty].inner != module.types[fragment_slot.ty].inner {
             return Err(BuildError::Message(format!(
-                "{label}: pass `{:?}` @location({location}) type mismatch between vertex {} ({}) \
+                "{label}: pass `{}` ({:?}) @location({location}) type mismatch between vertex {} ({}) \
                  and fragment {} ({})",
-                pass.kind,
+                pass.name,
+                pass.pass_type,
                 vertex.name,
                 type_label(module, vertex_slot.ty),
                 fragment.name,
@@ -140,9 +141,10 @@ fn validate_pass_interface_pair(
             || vertex_slot.per_primitive != fragment_slot.per_primitive
         {
             return Err(BuildError::Message(format!(
-                "{label}: pass `{:?}` @location({location}) interpolation mismatch between \
+                "{label}: pass `{}` ({:?}) @location({location}) interpolation mismatch between \
                  vertex {} ({}) and fragment {} ({})",
-                pass.kind,
+                pass.name,
+                pass.pass_type,
                 vertex.name,
                 io_slot_label(*vertex_slot),
                 fragment.name,

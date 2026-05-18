@@ -17,6 +17,7 @@ use super::super::super::sync::device_health::GpuDeviceHealth;
 use super::super::super::sync::mapped_buffer_health::GpuMappedBufferHealth;
 use super::super::{GpuContext, GpuError, PrimaryOffscreenTargets};
 use crate::config::{GraphicsApiSetting, VsyncMode};
+use crate::diagnostics::gpu_flight_recorder::GpuFlightRecorder;
 use crate::gpu::submission_state::GpuSubmissionState;
 
 /// Runtime handles derived from a queue and shared by all GPU construction paths.
@@ -42,11 +43,13 @@ impl GpuRuntimeHandles {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         mapped_buffer_health: Arc<GpuMappedBufferHealth>,
+        flight_recorder: Arc<GpuFlightRecorder>,
     ) -> Result<Self, GpuError> {
         let gpu_queue_access_gate = super::super::super::GpuQueueAccessGate::new();
         let driver_thread = super::super::super::driver_thread::DriverThread::new(
             Arc::clone(&queue),
             gpu_queue_access_gate.clone(),
+            Arc::clone(&flight_recorder),
         )
         .map_err(GpuError::DriverThreadSpawn)?;
         let frame_bracket = FrameBracket::new(device, Arc::clone(&queue), mapped_buffer_health);
@@ -81,6 +84,8 @@ pub(super) struct GpuContextParts {
     pub(super) mapped_buffer_health: Arc<GpuMappedBufferHealth>,
     /// Shared device-loss generation.
     pub(super) device_health: Arc<GpuDeviceHealth>,
+    /// Recent GPU/XR lifecycle events retained in memory.
+    pub(super) flight_recorder: Arc<GpuFlightRecorder>,
     /// Optional window-backed surface.
     pub(super) surface: Option<wgpu::Surface<'static>>,
     /// Active surface/offscreen configuration.
@@ -191,6 +196,7 @@ pub(super) fn assemble_context(parts: GpuContextParts) -> GpuContext {
             parts.mapped_buffer_health,
         ),
         device_health: parts.device_health,
+        flight_recorder: parts.flight_recorder,
         seen_device_lost_generation: 0,
         surface_configured: parts.surface.is_some(),
         surface: parts.surface,

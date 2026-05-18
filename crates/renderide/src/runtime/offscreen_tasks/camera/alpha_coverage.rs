@@ -18,7 +18,7 @@ pub(in crate::runtime) fn depth_marks_coverage(reverse_z_depth: f32) -> bool {
 
 /// Writes alpha 1 to covered CameraRenderTask pixels while preserving existing alpha elsewhere.
 pub(in crate::runtime) fn apply_camera_task_alpha_coverage(
-    gpu: &GpuContext,
+    gpu: &mut GpuContext,
     targets: &CameraTaskTargets,
 ) {
     apply_alpha_coverage_to_target(
@@ -32,7 +32,7 @@ pub(in crate::runtime) fn apply_camera_task_alpha_coverage(
 
 /// Writes alpha 1 to covered pixels on an arbitrary camera-task render target.
 pub(in crate::runtime) fn apply_alpha_coverage_to_target(
-    gpu: &GpuContext,
+    gpu: &mut GpuContext,
     color_view: &wgpu::TextureView,
     depth_texture: &wgpu::Texture,
     color_format: wgpu::TextureFormat,
@@ -66,6 +66,10 @@ pub(in crate::runtime) fn apply_alpha_coverage_to_target(
     let mut encoder = gpu
         .device()
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
+    let pass_query = gpu
+        .gpu_profiler_mut()
+        .map(|p| p.begin_pass_query("camera_task::alpha_coverage.pass", &mut encoder));
+    let timestamp_writes = crate::profiling::render_pass_timestamp_writes(pass_query.as_ref());
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(label),
@@ -79,13 +83,19 @@ pub(in crate::runtime) fn apply_alpha_coverage_to_target(
                 depth_slice: None,
             })],
             depth_stencil_attachment: None,
-            timestamp_writes: None,
+            timestamp_writes,
             occlusion_query_set: None,
             multiview_mask: None,
         });
         pass.set_pipeline(pipelines.pipeline(gpu.device(), color_format).as_ref());
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
+    }
+    if let Some(query) = pass_query
+        && let Some(prof) = gpu.gpu_profiler_mut()
+    {
+        prof.end_query(&mut encoder, query);
+        prof.resolve_queries(&mut encoder);
     }
     let command_buffer = {
         profiling::scope!("CommandEncoder::finish::camera_task_alpha_coverage");

@@ -11,16 +11,22 @@
 //#texture_default _EmissionMap black
 //#texture_default _OcclusionMap white
 //#texture_default _SpecularMap black
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _DisplaceDistanceFrom float 1.0
+//#mat_default _DisplaceMagnitudeTo float 0.1
+//#mat_default _DisplacementDirection vec4 0.0 1.0 0.0 0.0
+//#mat_default _EmissionColorTo vec4 1.5 1.5 1.5 0.0
+//#mat_default _EmissionDistanceFrom float 1.0
+//#mat_default _NormalScale float 1.0
 
 #import renderide::mesh::vertex as mv
 #import renderide::draw::per_draw as pd
 #import renderide::pbs::families::distance_lerp as pdist
 #import renderide::pbs::lighting as plight
-#import renderide::pbs::normal as pnorm
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::material::variant_bits as vb
-#import renderide::core::normal_decode as nd
+#import renderide::core::math as rmath
 #import renderide::core::uv as uvu
 
 struct PbsDistanceLerpSpecularTransparentMaterial {
@@ -84,23 +90,17 @@ fn kw_LOCAL_SPACE() -> bool { return pbsdlspect_kw(PBSDLSPECT_KW_LOCAL_SPACE); }
 fn kw_OVERRIDE_DISPLACE_DIRECTION() -> bool { return pbsdlspect_kw(PBSDLSPECT_KW_OVERRIDE_DISPLACE_DIRECTION); }
 
 fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, front_facing: bool) -> vec3<f32> {
-    if (!kw_NORMALMAP()) {
-        var n = normalize(world_n);
-        if (!front_facing) {
-            n = -n;
-        }
-        return n;
-    }
-
-    let tbn = pnorm::orthonormal_tbn(world_n, world_t);
-    var ts_n = nd::decode_ts_normal_with_placeholder_sample(
-        textureSample(_NormalMap, _NormalMap_sampler, uv_main),
+    return psamp::sample_optional_two_sided_world_normal(
+        kw_NORMALMAP(),
+        _NormalMap,
+        _NormalMap_sampler,
+        uv_main,
+        0.0,
         mat._NormalScale,
+        world_n,
+        world_t,
+        front_facing,
     );
-    if (!front_facing) {
-        ts_n.z = -ts_n.z;
-    }
-    return normalize(tbn * ts_n);
 }
 
 @vertex
@@ -141,7 +141,7 @@ fn vs_main(
     );
     let displaced_obj = pos.xyz + direction * acc.displace;
     let world_p = d.model * vec4<f32>(displaced_obj, 1.0);
-    let wn = normalize(d.normal_matrix * n.xyz);
+    let wn = rmath::safe_normalize(d.normal_matrix * n.xyz, vec3<f32>(0.0, 1.0, 0.0));
     let wt = mv::world_tangent(d, t);
 #ifdef MULTIVIEW
     let vp = mv::select_view_proj(d, view_idx);
@@ -195,12 +195,21 @@ fn shade(
 
     let emission_tex = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
     let emission = mat._EmissionColor.rgb * emission_tex + point_emission;
-    let surface = psurf::specular(base_color, alpha, f0, roughness, occlusion, n, emission);
+    let surface = psurf::specular_with_geometric_normal(
+        base_color,
+        alpha,
+        f0,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        emission,
+    );
     let options = plight::ClusterLightingOptions(include_directional, include_local, true, true);
     return plight::shade_specular_transparent_clustered(frag_xy, world_pos, view_layer, surface, options);
 }
 
-//#pass forward_transparent
+//#pass type=forward name=forward_transparent blend=transparent_material zwrite=material(off) cull=material(off) color_mask=material(rgba)
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

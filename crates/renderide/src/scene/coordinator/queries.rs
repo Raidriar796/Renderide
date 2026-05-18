@@ -5,7 +5,9 @@ use glam::{Mat4, Vec3};
 use crate::shared::{LayerType, RenderingContext};
 
 use super::super::ids::RenderSpaceId;
-use super::super::math::render_transform_has_degenerate_scale;
+use super::super::math::{
+    render_matrix_has_degenerate_scale, render_transform_has_degenerate_scale,
+};
 use super::super::render_space::RenderSpaceState;
 use super::super::render_transform_to_matrix;
 use super::SceneCoordinator;
@@ -147,11 +149,13 @@ impl SceneCoordinator {
         let mut cursor = transform_index;
         let mut reached_terminal = false;
         let mut any_override = false;
-        let mut any_degenerate = false;
+        let mut any_degenerate_scale = false;
+        let mut world = Mat4::IDENTITY;
         for _ in 0..space.nodes.len() {
             let (local, overridden) = local_transform_for_context(space, cursor, context);
             any_override |= overridden;
-            any_degenerate |= render_transform_has_degenerate_scale(&local);
+            any_degenerate_scale |= render_transform_has_degenerate_scale(&local);
+            world = render_transform_to_matrix(&local) * world;
             let parent = *space.node_parents.get(cursor).unwrap_or(&-1);
             if parent < 0 || parent as usize >= space.nodes.len() || parent == cursor as i32 {
                 reached_terminal = true;
@@ -162,7 +166,7 @@ impl SceneCoordinator {
         if !reached_terminal || !any_override {
             return self.transform_has_degenerate_scale(id, transform_index);
         }
-        any_degenerate
+        any_degenerate_scale || render_matrix_has_degenerate_scale(world)
     }
 }
 

@@ -245,7 +245,7 @@ fn camera360_target_error(error: CubeCaptureTargetError) -> CameraReadbackError 
 }
 
 /// Repairs alpha coverage on every rendered cubemap face before projection.
-fn apply_camera360_alpha_coverage(gpu: &GpuContext, targets: &CubeCaptureTargets) {
+fn apply_camera360_alpha_coverage(gpu: &mut GpuContext, targets: &CubeCaptureTargets) {
     profiling::scope!("camera360_task::alpha_coverage");
     for face in CubeCaptureFace::ALL {
         alpha_coverage::apply_alpha_coverage_to_target(

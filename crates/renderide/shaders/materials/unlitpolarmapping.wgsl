@@ -4,6 +4,7 @@
 
 
 //#texture_default _MainTex white
+//#mat_default _Pow float 1.0
 
 #import renderide::frame::globals as rg
 #import renderide::mesh::vertex as mv
@@ -35,7 +36,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward
+//#pass type=forward
 @fragment
 fn fs_main(
     @location(0) uv_in: vec2<f32>,

@@ -289,6 +289,110 @@ fn set_float_array_persisted_when_option_on() {
     );
 }
 
+/// Host array writes skip the old side-buffer tail when the whole array only fits in the next one.
+#[test]
+fn set_float_array_skips_current_side_buffer_tail_when_array_moves_to_next_buffer() {
+    let stream: Vec<u8> = [
+        update_bytes(31, MaterialPropertyUpdateType::SelectTarget),
+        update_bytes(2, MaterialPropertyUpdateType::SetFloat),
+        update_bytes(4, MaterialPropertyUpdateType::SetFloatArray),
+        update_bytes(0, MaterialPropertyUpdateType::UpdateBatchEnd),
+    ]
+    .concat();
+    let len: i32 = 2;
+    let int_bytes = bytemuck::bytes_of(&len).to_vec();
+    let first_float_values = [1.0f32, 999.0];
+    let second_float_values = [0.25f32, 0.75];
+    let first_float_bytes = bytemuck::cast_slice(&first_float_values).to_vec();
+    let second_float_bytes = bytemuck::cast_slice(&second_float_values).to_vec();
+    let mut loader = TestLoader {
+        blobs: vec![
+            stream.clone(),
+            int_bytes.clone(),
+            first_float_bytes.clone(),
+            second_float_bytes.clone(),
+        ],
+    };
+    let batch = MaterialsUpdateBatch {
+        material_updates: vec![desc(0, &stream)],
+        int_buffers: vec![desc(1, &int_bytes)],
+        float_buffers: vec![desc(2, &first_float_bytes), desc(3, &second_float_bytes)],
+        material_update_count: 1,
+        ..Default::default()
+    };
+    let mut store = MaterialPropertyStore::new();
+    let opts = ParseMaterialBatchOptions {
+        persist_extended_payloads: true,
+        ..Default::default()
+    };
+    let report = parse_materials_update_batch_into_store(&mut loader, &batch, &mut store, &opts);
+
+    assert!(!report.has_anomaly());
+    assert_eq!(
+        store.get_material(31, 2),
+        Some(&MaterialPropertyValue::Float(1.0))
+    );
+    assert_eq!(
+        store.get_material(31, 4),
+        Some(&MaterialPropertyValue::FloatArray(vec![0.25, 0.75]))
+    );
+}
+
+/// Host vector-array writes skip the old side-buffer tail when the whole array only fits next.
+#[test]
+fn set_float4_array_skips_current_side_buffer_tail_when_array_moves_to_next_buffer() {
+    let stream: Vec<u8> = [
+        update_bytes(32, MaterialPropertyUpdateType::SelectTarget),
+        update_bytes(3, MaterialPropertyUpdateType::SetFloat4),
+        update_bytes(5, MaterialPropertyUpdateType::SetFloat4Array),
+        update_bytes(0, MaterialPropertyUpdateType::UpdateBatchEnd),
+    ]
+    .concat();
+    let len: i32 = 2;
+    let int_bytes = bytemuck::bytes_of(&len).to_vec();
+    let scalar_value = [1.0f32, 2.0, 3.0, 4.0];
+    let stale_tail = [999.0f32, 998.0, 997.0, 996.0];
+    let expected0 = [0.25f32, 0.5, 0.75, 1.0];
+    let expected1 = [1.25f32, 1.5, 1.75, 2.0];
+    let first_float4_values = [scalar_value, stale_tail];
+    let second_float4_values = [expected0, expected1];
+    let first_float4_bytes = bytemuck::cast_slice(&first_float4_values).to_vec();
+    let second_float4_bytes = bytemuck::cast_slice(&second_float4_values).to_vec();
+    let mut loader = TestLoader {
+        blobs: vec![
+            stream.clone(),
+            int_bytes.clone(),
+            first_float4_bytes.clone(),
+            second_float4_bytes.clone(),
+        ],
+    };
+    let batch = MaterialsUpdateBatch {
+        material_updates: vec![desc(0, &stream)],
+        int_buffers: vec![desc(1, &int_bytes)],
+        float4_buffers: vec![desc(2, &first_float4_bytes), desc(3, &second_float4_bytes)],
+        material_update_count: 1,
+        ..Default::default()
+    };
+    let mut store = MaterialPropertyStore::new();
+    let opts = ParseMaterialBatchOptions {
+        persist_extended_payloads: true,
+        ..Default::default()
+    };
+    let report = parse_materials_update_batch_into_store(&mut loader, &batch, &mut store, &opts);
+
+    assert!(!report.has_anomaly());
+    assert_eq!(
+        store.get_material(32, 3),
+        Some(&MaterialPropertyValue::Float4(scalar_value))
+    );
+    assert_eq!(
+        store.get_material(32, 5),
+        Some(&MaterialPropertyValue::Float4Array(vec![
+            expected0, expected1
+        ]))
+    );
+}
+
 #[test]
 fn material_update_count_zero_targets_property_blocks_only() {
     let stream: Vec<u8> = [

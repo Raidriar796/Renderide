@@ -6,7 +6,7 @@
 
 use crate::color_space::srgb_vec4_rgb_to_linear;
 use crate::ipc::SharedMemoryAccessor;
-use crate::scene::dense_update::{push_dense_additions, swap_remove_dense_indices};
+use crate::scene::dense_update::{push_dense_additions, swap_remove_dense_indices_with_update};
 use crate::scene::error::SceneError;
 use crate::scene::render_space::RenderSpaceState;
 use crate::shared::{
@@ -70,6 +70,20 @@ pub(crate) fn extract_blit_to_display_update(
     Ok(out)
 }
 
+fn update_moved_blit_to_display(btd: &mut BlitToDisplayEntry, index: i32) {
+    btd.state.renderable_index = index;
+}
+
+fn build_added_blit_to_display(_id: i32, renderable_index: i32) -> BlitToDisplayEntry {
+    BlitToDisplayEntry {
+        state: BlitToDisplayState {
+            renderable_index,
+            ..BlitToDisplayState::default()
+        },
+        ..BlitToDisplayEntry::default()
+    }
+}
+
 /// Applies an [`ExtractedBlitToDisplayUpdate`] against the dense per-space table.
 pub(crate) fn apply_blit_to_display_update_extracted(
     space: &mut RenderSpaceState,
@@ -77,11 +91,17 @@ pub(crate) fn apply_blit_to_display_update_extracted(
 ) {
     profiling::scope!("scene::apply_blit_to_displays");
 
-    swap_remove_dense_indices(&mut space.blit_to_displays, &extracted.removals);
+    swap_remove_dense_indices_with_update(
+        &mut space.blit_to_displays,
+        &extracted.removals,
+        update_moved_blit_to_display,
+    );
 
-    push_dense_additions(&mut space.blit_to_displays, &extracted.additions, |_id| {
-        BlitToDisplayEntry::default()
-    });
+    push_dense_additions(
+        &mut space.blit_to_displays,
+        &extracted.additions,
+        &build_added_blit_to_display,
+    );
 
     for state in &extracted.states {
         if state.renderable_index < 0 {

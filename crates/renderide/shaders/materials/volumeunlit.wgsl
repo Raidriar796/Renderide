@@ -1,6 +1,12 @@
 //! Volume unlit raymarch material (`Shader "Volume/Unlit"`).
 
 //#texture_default _Volume empty
+//#mat_default _AccumulationCutoff float 100.0
+//#mat_default _Exp float 1.0
+//#mat_default _Gain float 0.1
+//#mat_default _HighClip float 1.0
+//#mat_default _HitThreshold float 0.5
+//#mat_default _StepSize float 0.1
 
 #import renderide::core::texture_sampling as ts
 #import renderide::draw::per_draw as pd
@@ -185,7 +191,7 @@ fn vs_main(
     return out;
 }
 
-//#pass volume_front
+//#pass type=forward name=volume_front blend=material_overlay zwrite=off ztest=always cull=front color_mask=rgba offset=0,0
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let draw = pd::get_draw(rg::draw_index_from_layer(in.view_layer));
@@ -254,5 +260,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         acc = vec4<f32>(acc.xyz / max(min(1.0, mat._AccumulationCutoff), vol::VOLUME_EPSILON), acc.a);
     }
 
-    return rg::retain_globals_additive(vec4<f32>(acc.xyz, 1.0));
+    let color = vol::clamp_volume_source_rgb(vec4<f32>(acc.xyz, 1.0));
+    return rg::retain_globals_additive(color);
 }

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use hashbrown::HashMap;
 use naga_oil::compose::ShaderDefValue;
 
-use super::directives::{BuildPassDirective, TextureDefaultDirective};
+use super::directives::{BuildPassDirective, MaterialDefaultDirective, TextureDefaultDirective};
 
 /// Validation toggles applied per shader source class.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,6 +150,8 @@ pub(super) struct CompiledShader {
     pub pass_directives: Vec<BuildPassDirective>,
     /// Parsed texture fallback metadata embedded alongside material WGSL.
     pub texture_defaults: Vec<TextureDefaultDirective>,
+    /// Parsed material uniform fallback metadata embedded alongside material WGSL.
+    pub material_defaults: Vec<MaterialDefaultDirective>,
     /// One or two output targets depending on whether multiview changes the WGSL.
     pub targets: Vec<CompiledShaderTarget>,
 }

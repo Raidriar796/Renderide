@@ -10,6 +10,7 @@ use super::cpu_copy::CpuCopyVideoSink;
 use super::ready::{video_audio_track_eq, video_texture_ready_eq};
 use super::source::source_uri;
 use crate::assets::video::VideoTextureFrameSink;
+use crate::gpu::GpuQueueAccessGate;
 use glam::IVec2;
 use gstreamer::prelude::{ElementExt, ElementExtManual};
 
@@ -202,6 +203,7 @@ impl VideoPlayer {
         l: VideoTextureLoad,
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
+        queue_access_gate: GpuQueueAccessGate,
     ) -> Option<Self> {
         let id = l.asset_id;
         let audio_sample_rate = normalized_audio_sample_rate(l.audio_system_sample_rate);
@@ -214,7 +216,7 @@ impl VideoPlayer {
         let audio_sink = ResoniteAudioSink::new(audio_sample_rate);
 
         // GStreamer-backed video textures currently use the CPU-copy sink on all platforms.
-        let video_sink = Box::new(CpuCopyVideoSink::new(id, device, queue));
+        let video_sink = Box::new(CpuCopyVideoSink::new(id, device, queue, queue_access_gate));
 
         let uri = match source_uri(l.source.as_deref()) {
             Ok(Some(uri)) => uri,

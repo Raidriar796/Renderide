@@ -226,6 +226,8 @@ publish/
 PublishScripts/
 
 # NuGet Packages
+.dotnet/
+.nuget/
 *.nupkg
 # NuGet Symbol Packages
 *.snupkg
@@ -461,3 +463,4 @@ config.toml
 *.log
 profile.json.gz
 !crates/renderide/src/bin/**
+*.lscache

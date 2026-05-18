@@ -10,6 +10,13 @@
 //#texture_default _EmissionMap black
 //#texture_default _OcclusionMap white
 //#texture_default _SpecularMap white
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _EndTransitionEnd float 0.1
+//#mat_default _EndTransitionStart float 0.1
+//#mat_default _IntersectColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _IntersectEmissionColor vec4 1.0 0.0 0.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _SpecularColor vec4 1.0 1.0 1.0 0.5
 
 #import renderide::core::math as rmath
 #import renderide::material::variant_bits as vb
@@ -103,7 +110,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward_transparent
+//#pass type=forward name=forward_transparent blend=transparent_material zwrite=material(off) cull=material(off) color_mask=material(rgba)
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
@@ -145,7 +152,16 @@ fn fs_main(
     }
     emission = emission + mat._IntersectEmissionColor.rgb * intersect_lerp;
 
-    let surface = psurf::specular(base_color, alpha, f0, roughness, occlusion, n, emission);
+    let surface = psurf::specular_with_geometric_normal(
+        base_color,
+        alpha,
+        f0,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        emission,
+    );
     return plight::shade_specular_transparent_clustered(
         frag_pos.xy,
         world_pos,

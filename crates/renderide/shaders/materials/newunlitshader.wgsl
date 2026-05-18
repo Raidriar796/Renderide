@@ -2,6 +2,8 @@
 //! `_node_2829` and scene lighting.
 
 
+//#mat_default _node_2829 vec4 0.5 0.5 0.5 1.0
+
 #import renderide::lighting::diffuse as dl
 #import renderide::core::math as rmath
 #import renderide::draw::per_draw as pd
@@ -45,7 +47,7 @@ fn vs_main(
     return out;
 }
 
-//#pass forward offset_factor=0 offset_units=1
+//#pass type=forward offset=0,1
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,

@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::super::super::frame_upload_batch::FrameUploadBatchStats;
 use super::super::super::pool::TransientPoolMetrics;
 use super::{CompiledRenderGraph, RecordedPerViewBatch, SubmitFrameBatchStats, TimedCommandBuffer};
+use crate::diagnostics::gpu_flight_recorder::GpuFlightEventKind;
+use crate::gpu::GpuContext;
 use crate::render_graph::blackboard::GraphCommandStats;
 
 const SLOW_ENCODER_FINISH_WARN_MS: f64 = 2.0;
@@ -14,6 +16,7 @@ static COMMAND_ENCODING_SLOW_LOG_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Copy, Debug)]
 pub(super) struct CommandEncodingDiagnostics {
     pub(super) view_count: usize,
+    pub(super) target_is_swapchain: bool,
     pub(super) command_buffers: usize,
     pub(super) frame_global_passes: usize,
     pub(super) per_view_passes: usize,
@@ -39,6 +42,7 @@ impl CommandEncodingDiagnostics {
     pub(super) fn new(graph: &CompiledRenderGraph, view_count: usize) -> Self {
         Self {
             view_count,
+            target_is_swapchain: false,
             command_buffers: 0,
             frame_global_passes: graph.schedule.frame_global_pass_indices().len(),
             per_view_passes: graph.schedule.per_view_pass_indices().len(),
@@ -75,6 +79,7 @@ impl CommandEncodingDiagnostics {
 
     pub(super) fn apply_submit(&mut self, submit: SubmitFrameBatchStats) {
         self.command_buffers = submit.command_buffer_count;
+        self.target_is_swapchain = submit.target_is_swapchain;
         self.upload_drain_ms = submit.upload_drain_ms;
         self.upload_finish_ms = submit.upload_finish_ms;
         self.command_batch_assembly_ms = submit.command_batch_assembly_ms;
@@ -128,6 +133,19 @@ impl CommandEncodingDiagnostics {
             world_mesh_pipeline_pass_submits: self.command_stats.pipeline_pass_submits,
         };
         crate::profiling::plot_command_encoding(&sample);
+    }
+
+    pub(super) fn record_flight_event(&self, gpu: &GpuContext) {
+        gpu.record_gpu_flight_event(GpuFlightEventKind::RenderGraphSubmit {
+            swapchain: self.target_is_swapchain,
+            views: self.view_count,
+            command_buffers: self.command_buffers,
+            draw_items: self.command_stats.draw_items,
+            pipeline_pass_submits: self.command_stats.pipeline_pass_submits,
+            upload_bytes: self.upload_stats.bytes,
+            transient_texture_misses: self.transient_delta.texture_misses,
+            transient_buffer_misses: self.transient_delta.buffer_misses,
+        });
     }
 
     pub(super) fn log_if_slow(&self) {

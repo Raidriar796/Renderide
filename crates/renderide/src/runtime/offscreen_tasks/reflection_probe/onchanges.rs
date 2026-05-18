@@ -371,6 +371,9 @@ impl ActiveOnChangesReflectionProbeCapture {
             view: self
                 .targets
                 .cube_sample_view("renderide-reflection-probe-onchanges-cube-view"),
+            array_view: self
+                .targets
+                .array_sample_view("renderide-reflection-probe-onchanges-array-view"),
         }
     }
 }

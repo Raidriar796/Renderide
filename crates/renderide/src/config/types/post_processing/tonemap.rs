@@ -24,7 +24,7 @@ labeled_enum! {
     /// [`crate::render_graph::cache::PostProcessChainSignature`] does not need to change unless
     /// the new mode introduces additional render-graph passes.
     pub enum TonemapMode: "tonemap mode" {
-        default => AcesFitted;
+        default => None;
 
         /// No tonemapping (raw HDR is passed through, identical to the master-disabled path but
         /// kept as an explicit option so the master toggle can stay enabled while only other

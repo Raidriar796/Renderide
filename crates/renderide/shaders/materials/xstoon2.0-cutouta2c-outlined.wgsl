@@ -13,10 +13,35 @@
 //#texture_default _CutoutMask white
 //#texture_default _Matcap black
 //#texture_default _ReflectivityMask white
+//#mat_default _RimCubemapTint float 0.0
+//#mat_default _SpecularAlbedoTint float 1.0
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _Cutoff float 0.5
+//#mat_default _MatcapTint vec4 1.0 1.0 1.0 1.0
+//#mat_default _OutlineColor vec4 0.0 0.0 0.0 1.0
+//#mat_default _RimColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _ShadowRim vec4 1.0 1.0 1.0 1.0
+//#mat_default _Saturation float 1.0
+//#mat_default _BumpScale float 1.0
+//#mat_default _Reflectivity float 1.0
+//#mat_default _RimAttenEffect float 1.0
+//#mat_default _RimRange float 0.7
+//#mat_default _RimThreshold float 0.1
+//#mat_default _RimSharpness float 0.1
+//#mat_default _SpecularArea float 0.5
+//#mat_default _ShadowSharpness float 0.5
+//#mat_default _ShadowRimRange float 0.7
+//#mat_default _ShadowRimThreshold float 0.1
+//#mat_default _ShadowRimSharpness float 0.3
+//#mat_default _OutlineWidth float 1.0
+//#mat_default _SSDistortion float 1.0
+//#mat_default _SSPower float 1.0
+//#mat_default _SSScale float 1.0
 
 #import renderide::xiexe::toon2 as xs
 #import renderide::xiexe::toon2::base as xb
 #import renderide::xiexe::toon2::variant_bits as xvb
+#import renderide::xiexe::toon2::outline as xo
 
 const XIEE_ALPHA_MODE: u32 = 2u;
 const XIEE_KEYWORD_LAYOUT: u32 = xvb::XTOON_KEYWORD_LAYOUT_STATIC_VERTEXLIGHT;
@@ -55,13 +80,13 @@ fn vs_outline(
     @location(5) uv1: vec2<f32>,
 ) -> xb::VertexOutput {
 #ifdef MULTIVIEW
-    return xs::vertex_outline(instance_index, view_idx, pos, n, uv0, color, tangent, uv1);
+    return xo::vertex_outline(instance_index, view_idx, pos, n, uv0, color, tangent, uv1);
 #else
-    return xs::vertex_outline(instance_index, 0u, pos, n, uv0, color, tangent, uv1);
+    return xo::vertex_outline(instance_index, 0u, pos, n, uv0, color, tangent, uv1);
 #endif
 }
 
-//#pass outline vs=vs_outline a2c=true
+//#pass type=forward name=outline blend=off cull=front vs=vs_outline a2c=true
 @fragment
 fn fs_outline(
     @builtin(position) frag_pos: vec4<f32>,
@@ -75,12 +100,12 @@ fn fs_outline(
     @location(6) color: vec4<f32>,
     @location(8) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    return xs::fragment_outline_for_layout(
+    return xo::fragment_outline_for_layout(
         frag_pos, front_facing, world_pos, world_n, world_t, world_b, uv0, uv1, color, view_layer, XIEE_ALPHA_MODE, XIEE_KEYWORD_LAYOUT
     );
 }
 
-//#pass forward a2c=true
+//#pass type=forward a2c=true
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

@@ -110,10 +110,38 @@ impl<'a, L: MaterialBatchBlobLoader + ?Sized> BatchParser<'a, L> {
         )
     }
 
+    /// Reads the next length-prefixed `f32` array payload from the floats side buffer.
+    pub(super) fn next_float_array_prefix(
+        &mut self,
+        len: usize,
+        prefix_len: usize,
+    ) -> Option<Vec<f32>> {
+        record_optional_array_read(
+            self.floats.next_array_prefix(self.loader, len, prefix_len),
+            len,
+            &mut self.report.floats_read,
+            &mut self.report.missing_floats,
+        )
+    }
+
     /// Reads the next `float4` from the float4s side buffer.
     pub(super) fn next_float4(&mut self) -> Option<[f32; 4]> {
         record_optional_read(
             self.float4s.next(self.loader),
+            &mut self.report.float4s_read,
+            &mut self.report.missing_float4s,
+        )
+    }
+
+    /// Reads the next length-prefixed `float4` array payload from the float4s side buffer.
+    pub(super) fn next_float4_array_prefix(
+        &mut self,
+        len: usize,
+        prefix_len: usize,
+    ) -> Option<Vec<[f32; 4]>> {
+        record_optional_array_read(
+            self.float4s.next_array_prefix(self.loader, len, prefix_len),
+            len,
             &mut self.report.float4s_read,
             &mut self.report.missing_float4s,
         )
@@ -145,6 +173,21 @@ impl<'a, L: MaterialBatchBlobLoader + ?Sized> BatchParser<'a, L> {
         self.report.instance_changed_capacity_bits = instance_changed_capacity_bits;
         self.report
     }
+}
+
+/// Records a typed side-stream array read attempt and returns the retained prefix.
+fn record_optional_array_read<T>(
+    value: Option<Vec<T>>,
+    requested_count: usize,
+    read_count: &mut usize,
+    missing_count: &mut usize,
+) -> Option<Vec<T>> {
+    if value.is_some() {
+        *read_count = read_count.saturating_add(requested_count);
+    } else {
+        *missing_count = missing_count.saturating_add(requested_count.max(1));
+    }
+    value
 }
 
 /// Records a typed side-stream read attempt and returns the original value.

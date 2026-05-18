@@ -37,7 +37,9 @@ pub(crate) fn encode_world_mesh_forward_depth_snapshot(
     if !frame.shared.frame_resources.has_frame_gpu() {
         return false;
     }
-    frame
+    let copy_query =
+        profiler.map(|p| p.begin_query("world_mesh_forward::scene_depth_snapshot_copy", encoder));
+    let copied = frame
         .shared
         .frame_resources
         .copy_scene_depth_snapshot_for_view(
@@ -46,7 +48,11 @@ pub(crate) fn encode_world_mesh_forward_depth_snapshot(
             frame.view.depth_texture,
             frame.view.viewport_px,
             prepared.pipeline.use_multiview,
-        )
+        );
+    if let (Some(profiler), Some(query)) = (profiler, copy_query) {
+        profiler.end_query(encoder, query);
+    }
+    copied
 }
 
 /// Returns whether the scene-depth snapshot copy should be recorded for this view.

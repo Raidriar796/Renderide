@@ -33,6 +33,22 @@ pub use encode_error::DebugHudEncodeError;
 pub use input::{DebugHudInput, sanitize_input_state_for_imgui_host};
 pub use state::HudUiState;
 
+/// GPU target and encoder state for one debug-HUD overlay encode.
+pub(crate) struct DebugHudOverlayContext<'a, 'encoder> {
+    /// WGPU device used by the ImGui renderer.
+    pub(crate) device: &'a wgpu::Device,
+    /// WGPU queue used by the ImGui renderer for texture updates.
+    pub(crate) queue: &'a wgpu::Queue,
+    /// Command encoder receiving the HUD render pass.
+    pub(crate) encoder: &'encoder mut wgpu::CommandEncoder,
+    /// Swapchain or offscreen color view the HUD should composite over.
+    pub(crate) backbuffer: &'a wgpu::TextureView,
+    /// Pixel extent of the target surface.
+    pub(crate) extent: (u32, u32),
+    /// Optional GPU profiler for pass timestamp instrumentation.
+    pub(crate) profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
+}
+
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -322,9 +338,12 @@ impl DebugHud {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         backbuffer: &wgpu::TextureView,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) -> Result<(bool, bool), DebugHudEncodeError> {
         profiling::scope!("hud::encode_imgui_wgpu");
         let draw_data = self.imgui.render();
+        let pass_query = profiler.map(|p| p.begin_pass_query("hud::imgui_wgpu_pass", encoder));
+        let timestamp_writes = crate::profiling::render_pass_timestamp_writes(pass_query.as_ref());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("imgui-debug-hud"),
@@ -339,13 +358,16 @@ impl DebugHud {
                 })],
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
-                timestamp_writes: None,
+                timestamp_writes,
                 multiview_mask: None,
             });
             self.renderer
                 .render(draw_data, queue, device, &mut pass)
                 .map_err(|e| DebugHudEncodeError::ImguiWgpu(e.to_string()))?;
         };
+        if let (Some(p), Some(q)) = (profiler, pass_query) {
+            p.end_query(encoder, q);
+        }
         let io = self.imgui.io();
         Ok((io.want_capture_mouse, io.want_capture_keyboard))
     }
@@ -358,14 +380,18 @@ impl DebugHud {
     /// + one match arm; the encode path stays a single for-loop.
     pub fn encode_overlay(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        backbuffer: &wgpu::TextureView,
-        (width, height): (u32, u32),
+        target: DebugHudOverlayContext<'_, '_>,
         input: &DebugHudInput,
     ) -> Result<(bool, bool), DebugHudEncodeError> {
         profiling::scope!("hud::encode_overlay");
+        let DebugHudOverlayContext {
+            device,
+            queue,
+            encoder,
+            backbuffer,
+            extent: (width, height),
+            profiler,
+        } = target;
         self.apply_overlay_frame_io((width, height), input);
 
         let flags = OverlayFeatureFlags::from_settings(&self.renderer_settings);
@@ -429,7 +455,7 @@ impl DebugHud {
             }
         }
 
-        let result = self.encode_imgui_wgpu_pass(device, queue, encoder, backbuffer);
+        let result = self.encode_imgui_wgpu_pass(device, queue, encoder, backbuffer, profiler);
         self.persist_ui_state_to_config_if_changed();
         self.save_imgui_ini_if_requested();
         result
