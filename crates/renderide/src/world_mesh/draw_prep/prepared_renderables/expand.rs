@@ -17,13 +17,13 @@ use crate::scene::{
 };
 use crate::shared::RenderingContext;
 use crate::world_mesh::culling::{
-    MeshCullGeometry, frustum::mesh_bounds_degenerate_for_cull, world_aabb_from_local_bounds,
+    MeshCullGeometry, MeshCullTarget, mesh_world_geometry_for_cull_with_head,
 };
 
 use crate::world_mesh::draw_prep::collect::prepared::prepared_draws_share_renderer;
 
 use super::super::item::stacked_material_submesh_range;
-use super::{FramePreparedDraw, FramePreparedRun, FramePreparedSpace};
+use super::{FramePreparedDraw, FramePreparedRun};
 
 const MATERIAL_KEY_SIGNATURE_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const MATERIAL_KEY_SIGNATURE_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -68,16 +68,6 @@ struct RenderableExpansion<'a> {
     blendshape_deformed: bool,
     /// Whether active blendshape tangent deltas should run for tangent-reading materials.
     tangent_blendshape_deform_active: bool,
-    /// Whether the owning render space is overlay-rooted against the view.
-    space_is_overlay: bool,
-    /// Render-context world matrix for the renderer transform before overlay-space re-rooting.
-    context_world_matrix: Option<Mat4>,
-    /// Overlay-layer model matrix when the renderer inherits the overlay layer.
-    overlay_layer_model_matrix: Option<Mat4>,
-    /// Render-context world matrix for the skinned root transform before overlay-space re-rooting.
-    skinned_root_world_matrix: Option<Mat4>,
-    /// Host-provided posed skinned bounds in the renderer-root local frame.
-    posed_object_bounds: Option<crate::shared::RenderBoundingBox>,
     /// Frame-time precomputed cull geometry for the renderer (`None` for overlay spaces).
     cull_geometry: Option<MeshCullGeometry>,
 }
@@ -200,7 +190,6 @@ pub(in crate::world_mesh::draw_prep) fn expand_space_into(
     mesh_pool: &MeshPool,
     render_context: RenderingContext,
     space_id: RenderSpaceId,
-    space_meta: &FramePreparedSpace,
 ) {
     profiling::scope!("mesh::prepared_renderables::expand_space");
     let Some(space) = scene.space(space_id) else {
@@ -217,7 +206,6 @@ pub(in crate::world_mesh::draw_prep) fn expand_space_into(
         mesh_pool,
         render_context,
         space_id,
-        space_meta,
         space_is_overlay,
     };
     expand_static_list(ctx.reborrow(), space.static_mesh_renderers());
@@ -232,11 +220,10 @@ pub(in crate::world_mesh::draw_prep) fn expand_space_into_aggressive(
     mesh_pool: &MeshPool,
     render_context: RenderingContext,
     space_id: RenderSpaceId,
-    space_meta: &FramePreparedSpace,
 ) {
     profiling::scope!("mesh::prepared_renderables::expand_space_aggressive");
     if renderer_count_for_space(scene, space_id) < PREPARED_EXPAND_PARALLEL_MIN_RENDERERS {
-        expand_space_into(out, scene, mesh_pool, render_context, space_id, space_meta);
+        expand_space_into(out, scene, mesh_pool, render_context, space_id);
         return;
     }
     expand_space_into_parallel_chunks(
@@ -246,7 +233,6 @@ pub(in crate::world_mesh::draw_prep) fn expand_space_into_aggressive(
         mesh_pool,
         render_context,
         space_id,
-        space_meta,
     );
 }
 
@@ -257,7 +243,6 @@ fn expand_space_into_parallel_chunks(
     mesh_pool: &MeshPool,
     render_context: RenderingContext,
     space_id: RenderSpaceId,
-    space_meta: &FramePreparedSpace,
 ) {
     profiling::scope!("mesh::prepared_renderables::expand_parallel_chunks");
     let Some(space) = scene.space(space_id) else {
@@ -281,7 +266,7 @@ fn expand_space_into_parallel_chunks(
         );
     }
     if specs.len() < 2 {
-        expand_space_into(out, scene, mesh_pool, render_context, space_id, space_meta);
+        expand_space_into(out, scene, mesh_pool, render_context, space_id);
         return;
     }
 
@@ -299,15 +284,7 @@ fn expand_space_into_parallel_chunks(
             profiling::scope!("mesh::prepared_renderables::renderer_chunk_worker");
             chunk_out.clear();
             chunk_out.reserve(spec.range.len().saturating_mul(2));
-            expand_space_chunk_into(
-                chunk_out,
-                scene,
-                mesh_pool,
-                render_context,
-                space_id,
-                space_meta,
-                spec,
-            );
+            expand_space_chunk_into(chunk_out, scene, mesh_pool, render_context, space_id, spec);
         });
 
     {
@@ -347,7 +324,6 @@ struct ExpandCtx<'a> {
     mesh_pool: &'a MeshPool,
     render_context: RenderingContext,
     space_id: RenderSpaceId,
-    space_meta: &'a FramePreparedSpace,
     space_is_overlay: bool,
 }
 
@@ -359,7 +335,6 @@ impl<'a> ExpandCtx<'a> {
             mesh_pool: self.mesh_pool,
             render_context: self.render_context,
             space_id: self.space_id,
-            space_meta: self.space_meta,
             space_is_overlay: self.space_is_overlay,
         }
     }
@@ -391,7 +366,6 @@ fn expand_space_chunk_into(
     mesh_pool: &MeshPool,
     render_context: RenderingContext,
     space_id: RenderSpaceId,
-    space_meta: &FramePreparedSpace,
     spec: &ExpansionChunkSpec,
 ) {
     profiling::scope!("mesh::prepared_renderables::expand_renderer_chunk");
@@ -407,7 +381,6 @@ fn expand_space_chunk_into(
         mesh_pool,
         render_context,
         space_id,
-        space_meta,
         space_is_overlay: space.is_overlay(),
     };
     match spec.kind {
@@ -449,7 +422,11 @@ fn try_expand_one_renderer(
     if !base.emits_visible_color_draws() || base.mesh_asset_id < 0 || base.node_id < 0 {
         return;
     }
-    if ctx.space_meta.transform_has_degenerate_scale(base.node_id) {
+    if ctx.scene.transform_has_degenerate_scale_for_context(
+        ctx.space_id,
+        base.node_id as usize,
+        ctx.render_context,
+    ) {
         return;
     }
     let Some(mesh) = ctx.mesh_pool.get(base.mesh_asset_id) else {
@@ -466,24 +443,8 @@ fn try_expand_one_renderer(
     let tangent_blendshape_deform_active =
         mesh.supports_active_tangent_blendshape_deform(&base.blend_shape_weights);
 
-    let context_world_matrix = ctx.space_meta.context_world_matrix(base.node_id);
-    let overlay_layer_model_matrix = ctx.space_meta.overlay_layer_model_matrix(base.node_id);
-    let root_node_id = skinned_renderer
-        .and_then(|sk| sk.root_bone_transform_id)
-        .filter(|&id| id >= 0)
-        .unwrap_or(base.node_id);
-    let skinned_root_world_matrix = skinned
-        .then(|| ctx.space_meta.context_world_matrix(root_node_id))
-        .flatten();
-    let posed_object_bounds = skinned_renderer.and_then(|sk| sk.posed_object_bounds);
-    let cull_geometry = precompute_cull_geometry(
-        ctx,
-        mesh,
-        skinned,
-        context_world_matrix,
-        skinned_root_world_matrix,
-        posed_object_bounds.as_ref(),
-    );
+    let cull_geometry =
+        precompute_cull_geometry(ctx, mesh, skinned, skinned_renderer, base.node_id);
 
     expand_renderer_slots(
         ctx.out,
@@ -499,11 +460,6 @@ fn try_expand_one_renderer(
             world_space_deformed,
             blendshape_deformed,
             tangent_blendshape_deform_active,
-            space_is_overlay: ctx.space_is_overlay,
-            context_world_matrix,
-            overlay_layer_model_matrix,
-            skinned_root_world_matrix,
-            posed_object_bounds,
             cull_geometry,
         },
     );
@@ -521,64 +477,25 @@ fn precompute_cull_geometry(
     ctx: &ExpandCtx<'_>,
     mesh: &GpuMesh,
     skinned: bool,
-    context_world_matrix: Option<Mat4>,
-    skinned_root_world_matrix: Option<Mat4>,
-    posed_object_bounds: Option<&crate::shared::RenderBoundingBox>,
+    skinned_renderer: Option<&SkinnedMeshRenderer>,
+    node_id: i32,
 ) -> Option<MeshCullGeometry> {
     if ctx.space_is_overlay {
         return None;
     }
-    Some(mesh_cull_geometry_from_prepared(
+    let target = MeshCullTarget {
+        scene: ctx.scene,
+        space_id: ctx.space_id,
         mesh,
         skinned,
-        context_world_matrix,
-        skinned_root_world_matrix,
-        posed_object_bounds,
+        skinned_renderer,
+        node_id,
+    };
+    Some(mesh_world_geometry_for_cull_with_head(
+        &target,
+        Mat4::IDENTITY,
+        ctx.render_context,
     ))
-}
-
-pub(in crate::world_mesh::draw_prep) fn mesh_cull_geometry_from_prepared(
-    mesh: &GpuMesh,
-    skinned: bool,
-    context_world_matrix: Option<Mat4>,
-    skinned_root_world_matrix: Option<Mat4>,
-    posed_object_bounds: Option<&crate::shared::RenderBoundingBox>,
-) -> MeshCullGeometry {
-    if mesh_bounds_degenerate_for_cull(&mesh.bounds) {
-        return MeshCullGeometry {
-            world_aabb: None,
-            rigid_world_matrix: None,
-            front_face_world_matrix: None,
-        };
-    }
-    if skinned {
-        let Some(root_world) = skinned_root_world_matrix else {
-            return MeshCullGeometry {
-                world_aabb: None,
-                rigid_world_matrix: None,
-                front_face_world_matrix: None,
-            };
-        };
-        let bounds = posed_object_bounds.unwrap_or(&mesh.bounds);
-        MeshCullGeometry {
-            world_aabb: world_aabb_from_local_bounds(bounds, root_world),
-            rigid_world_matrix: None,
-            front_face_world_matrix: Some(root_world),
-        }
-    } else {
-        let Some(model) = context_world_matrix else {
-            return MeshCullGeometry {
-                world_aabb: None,
-                rigid_world_matrix: None,
-                front_face_world_matrix: None,
-            };
-        };
-        MeshCullGeometry {
-            world_aabb: world_aabb_from_local_bounds(&mesh.bounds, model),
-            rigid_world_matrix: Some(model),
-            front_face_world_matrix: Some(model),
-        }
-    }
 }
 
 /// Expands one renderer's material slots mapped to submesh ranges into prepared draws.
@@ -601,11 +518,6 @@ fn expand_renderer_slots(
         world_space_deformed,
         blendshape_deformed,
         tangent_blendshape_deform_active,
-        space_is_overlay,
-        context_world_matrix,
-        overlay_layer_model_matrix,
-        skinned_root_world_matrix,
-        posed_object_bounds,
         cull_geometry,
     } = renderable;
     let fallback_slot;
@@ -629,7 +541,8 @@ fn expand_renderer_slots(
         return;
     }
 
-    let is_overlay = overlay_layer_model_matrix.is_some();
+    let is_overlay = renderer.node_id >= 0
+        && scene.transform_is_in_overlay_layer(space_id, renderer.node_id as usize);
 
     for (slot_index, slot) in slots.iter().enumerate() {
         let Some((first_index, index_count)) =
@@ -664,11 +577,6 @@ fn expand_renderer_slots(
             world_space_deformed,
             blendshape_deformed,
             tangent_blendshape_deform_active,
-            space_is_overlay,
-            context_world_matrix,
-            overlay_layer_model_matrix,
-            skinned_root_world_matrix,
-            posed_object_bounds,
             slot_index,
             first_index,
             index_count,

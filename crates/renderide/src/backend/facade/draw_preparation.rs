@@ -67,33 +67,6 @@ impl BackendDrawPreparation {
         }
     }
 
-    /// Marks all backend-owned render worlds dirty.
-    pub(super) fn mark_all_render_worlds_dirty(&mut self) {
-        for render_world in self.render_worlds.values_mut() {
-            render_world.mark_all_dirty();
-        }
-    }
-
-    /// Prepared render worlds keyed by render context.
-    pub(super) fn render_worlds(&self) -> &HashMap<u8, RenderWorld> {
-        &self.render_worlds
-    }
-
-    /// Refreshes render-world tables for every render context used this frame.
-    pub(super) fn prepare_render_worlds_for_views(
-        &mut self,
-        scene: &SceneCoordinator,
-        mesh_pool: &crate::gpu_pools::MeshPool,
-        view_draw_preparations: &[(RenderingContext, ShaderPermutation)],
-    ) {
-        prepare_render_worlds_for_views(
-            &mut self.render_worlds,
-            scene,
-            mesh_pool,
-            view_draw_preparations,
-        );
-    }
-
     /// Refreshes backend-owned draw-prep state and returns the immutable frame setup.
     pub(super) fn extract_frame_shared<'a>(
         &'a mut self,
@@ -122,6 +95,16 @@ impl BackendDrawPreparation {
             let pipeline_property_ids = materials.pipeline_property_resolver().resolve();
             (property_store, router, pipeline_property_ids)
         };
+        {
+            profiling::scope!("render::build_frame_prepared_renderables");
+            prepare_render_worlds_for_views(
+                render_worlds,
+                scene,
+                asset_transfers.mesh_pool(),
+                view_draw_preparations,
+            );
+        }
+
         refresh_material_caches(
             material_batch_caches,
             render_worlds,

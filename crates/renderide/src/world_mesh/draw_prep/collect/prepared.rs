@@ -5,19 +5,19 @@ use hashbrown::HashMap;
 use glam::{Mat4, Vec3};
 
 use crate::materials::RasterFrontFace;
-use crate::scene::RenderSpaceId;
+use crate::scene::{RenderSpaceId, SkinnedMeshRenderer};
 
-use crate::world_mesh::culling::{CpuCullFailure, mesh_cpu_cull_with_geometry};
+use crate::world_mesh::culling::{
+    CpuCullFailure, MeshCullTarget, mesh_cpu_cull_with_geometry,
+    mesh_world_geometry_for_cull_with_head,
+};
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
 use super::super::item::{WorldMeshDrawItem, stacked_material_submesh_topology};
-use super::super::prepared_renderables::{
-    FramePreparedDraw, FramePreparedRun, FramePreparedSpace, mesh_cull_geometry_from_prepared,
-    overlay_space_root_matrix,
-};
+use super::super::prepared_renderables::{FramePreparedDraw, FramePreparedRun};
 use super::DrawCollectionContext;
 use super::candidate::{DrawCandidate, evaluate_draw_candidate};
-use super::world_matrix::front_face_for_draw_matrices;
+use super::world_matrix::{front_face_for_draw_matrices, world_matrix_for_local_vertex_stream};
 
 /// Returns true when two prepared slot entries came from the same source renderer.
 #[inline]
@@ -36,10 +36,6 @@ pub(in crate::world_mesh::draw_prep) fn prepared_draws_share_renderer(
         && a.world_space_deformed == b.world_space_deformed
         && a.blendshape_deformed == b.blendshape_deformed
         && a.tangent_blendshape_deform_active == b.tangent_blendshape_deform_active
-        && a.space_is_overlay == b.space_is_overlay
-        && a.context_world_matrix == b.context_world_matrix
-        && a.overlay_layer_model_matrix == b.overlay_layer_model_matrix
-        && a.skinned_root_world_matrix == b.skinned_root_world_matrix
 }
 
 /// Per-renderer view-local state shared by every material slot in a prepared run.
@@ -55,10 +51,29 @@ struct PreparedRunViewState {
     alpha_distance_sq: f32,
 }
 
+/// Skinned renderer lookup result for a prepared renderer run.
+enum PreparedRunSkinning<'a> {
+    /// The renderer uses the rigid static-mesh path.
+    Rigid,
+    /// The renderer uses the skinned path and still has a valid scene entry.
+    Skinned(&'a SkinnedMeshRenderer),
+    /// The prepared index no longer points at a valid skinned renderer this frame.
+    Stale,
+}
+
+impl<'a> PreparedRunSkinning<'a> {
+    /// Returns the culling target's optional skinned renderer borrow.
+    fn as_renderer(&self) -> Option<&'a SkinnedMeshRenderer> {
+        match self {
+            Self::Rigid | Self::Stale => None,
+            Self::Skinned(renderer) => Some(renderer),
+        }
+    }
+}
+
 /// Returns whether the renderer run passes the view's optional transform filter.
 fn prepared_run_passes_filter(
     first: &FramePreparedDraw,
-    space: &FramePreparedSpace,
     ctx: &DrawCollectionContext<'_>,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
 ) -> bool {
@@ -71,17 +86,34 @@ fn prepared_run_passes_filter(
                 && (first.node_id as usize) < mask.len()
                 && mask[first.node_id as usize]
         }
-        None => filter.passes_node_with_parents(first.node_id, &space.node_parents),
+        None => filter.passes_scene_node(ctx.scene, first.space_id, first.node_id),
     }
+}
+
+/// Returns the skinned renderer backing a prepared run, or `None` when stale scene indices should skip it.
+fn prepared_run_skinned_renderer<'a>(
+    first: &FramePreparedDraw,
+    ctx: &'a DrawCollectionContext<'_>,
+) -> PreparedRunSkinning<'a> {
+    if !first.skinned {
+        return PreparedRunSkinning::Rigid;
+    }
+    let Some(space) = ctx.scene.space(first.space_id) else {
+        return PreparedRunSkinning::Stale;
+    };
+    space
+        .skinned_mesh_renderers()
+        .get(first.renderable_index)
+        .map_or(PreparedRunSkinning::Stale, PreparedRunSkinning::Skinned)
 }
 
 /// Builds shared view-local state for one prepared renderer run and reports draw-slot cull stats.
 fn prepared_run_view_state(
     run: &[FramePreparedDraw],
     first: &FramePreparedDraw,
-    space: &FramePreparedSpace,
     is_overlay: bool,
     mesh: &crate::assets::mesh::GpuMesh,
+    skinning: &PreparedRunSkinning<'_>,
     ctx: &DrawCollectionContext<'_>,
 ) -> (Option<PreparedRunViewState>, (usize, usize, usize)) {
     let mut cull_stats = (0usize, 0usize, 0usize);
@@ -94,20 +126,29 @@ fn prepared_run_view_state(
         // Reuse the per-renderer geometry that `FramePreparedRenderables::build_for_frame` already
         // computed for non-overlay spaces. Overlay spaces (geometry depends on the per-view
         // `head_output_transform`) keep recomputing per-view via the fallback path below.
-        first
-            .cull_geometry
-            .unwrap_or_else(|| prepared_geometry_for_view(first, space, mesh, ctx))
+        first.cull_geometry.unwrap_or_else(|| {
+            let target = MeshCullTarget {
+                scene: ctx.scene,
+                space_id: first.space_id,
+                mesh,
+                skinned: first.skinned,
+                skinned_renderer: skinning.as_renderer(),
+                node_id: first.node_id,
+            };
+            mesh_world_geometry_for_cull_with_head(
+                &target,
+                ctx.head_output_transform,
+                ctx.render_context,
+            )
+        })
     });
     if let Some(geom) = geometry {
         world_aabb = geom.world_aabb;
         deformed_front_face_world_matrix = geom.front_face_world_matrix;
         if let Some(c) = ctx.culling {
             cull_stats.0 += run.len();
-            let view = c
-                .host_camera
-                .explicit_world_to_view()
-                .unwrap_or(space.view_matrix);
-            match mesh_cpu_cull_with_geometry(geom, view, first.space_id, is_overlay, c, None) {
+            match mesh_cpu_cull_with_geometry(geom, ctx.scene, first.space_id, is_overlay, c, None)
+            {
                 Err(CpuCullFailure::Frustum | CpuCullFailure::UiRectMask) => {
                     cull_stats.1 += run.len();
                     return (None, cull_stats);
@@ -126,10 +167,10 @@ fn prepared_run_view_state(
     }
     if is_overlay && !first.world_space_deformed {
         rigid_world_matrix =
-            space.local_vertex_model_matrix(first.node_id, true, ctx.head_output_transform);
+            world_matrix_for_local_vertex_stream(ctx, first.space_id, first.node_id, true);
     } else if !first.world_space_deformed && rigid_world_matrix.is_none() {
         rigid_world_matrix =
-            space.local_vertex_model_matrix(first.node_id, false, ctx.head_output_transform);
+            world_matrix_for_local_vertex_stream(ctx, first.space_id, first.node_id, false);
     }
     let front_face = front_face_for_draw_matrices(
         first.world_space_deformed,
@@ -147,36 +188,6 @@ fn prepared_run_view_state(
             alpha_distance_sq,
         }),
         cull_stats,
-    )
-}
-
-/// Builds cull geometry from prepared transform rows for view-dependent overlay spaces.
-fn prepared_geometry_for_view(
-    first: &FramePreparedDraw,
-    space: &FramePreparedSpace,
-    mesh: &crate::assets::mesh::GpuMesh,
-    ctx: &DrawCollectionContext<'_>,
-) -> crate::world_mesh::culling::MeshCullGeometry {
-    let context_world_matrix = if first.space_is_overlay {
-        first
-            .context_world_matrix
-            .map(|m| overlay_space_root_matrix(space.root_transform, ctx.head_output_transform) * m)
-    } else {
-        first.context_world_matrix
-    };
-    let skinned_root_world_matrix = if first.space_is_overlay {
-        first
-            .skinned_root_world_matrix
-            .map(|m| overlay_space_root_matrix(space.root_transform, ctx.head_output_transform) * m)
-    } else {
-        first.skinned_root_world_matrix
-    };
-    mesh_cull_geometry_from_prepared(
-        mesh,
-        first.skinned,
-        context_world_matrix,
-        skinned_root_world_matrix,
-        first.posed_object_bounds.as_ref(),
     )
 }
 
@@ -243,20 +254,18 @@ fn collect_prepared_renderer_run(
     {
         return (0, 0, 0);
     }
-    let Some(prepared) = ctx.prepared else {
-        return (0, 0, 0);
-    };
-    let Some(space) = prepared.space(first.space_id) else {
-        return (0, 0, 0);
-    };
-    if !prepared_run_passes_filter(first, space, ctx, filter_masks) {
+    if !prepared_run_passes_filter(first, ctx, filter_masks) {
         return (0, 0, 0);
     }
     let is_overlay = first.is_overlay;
     let Some(mesh) = ctx.mesh_pool.get(first.mesh_asset_id) else {
         return (0, 0, 0);
     };
-    let (state, cull_stats) = prepared_run_view_state(run, first, space, is_overlay, mesh, ctx);
+    let skinning = prepared_run_skinned_renderer(first, ctx);
+    if matches!(skinning, PreparedRunSkinning::Stale) {
+        return (0, 0, 0);
+    }
+    let (state, cull_stats) = prepared_run_view_state(run, first, is_overlay, mesh, &skinning, ctx);
     if let Some(state) = state {
         append_prepared_run_draws(run, ctx, cache, mesh, is_overlay, state, out);
     }

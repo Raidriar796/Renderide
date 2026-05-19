@@ -12,18 +12,14 @@ use crate::assets::texture::{HostTextureAssetKind, pack_host_texture_id};
 use crate::color_space::DEFAULT_SKYBOX_CLEAR_COLOR;
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{
-    BlitToDisplayState, FrameSubmitData, RenderSH2, RenderSpaceUpdate, RenderTransform,
-    RenderingContext,
+    BlitToDisplayState, FrameSubmitData, RenderSH2, RenderSpaceUpdate, RenderingContext,
 };
 
 use super::DrainedReflectionProbeRenderChanges;
 use super::error::SceneError;
 use super::ids::RenderSpaceId;
-#[cfg(test)]
-use super::lights::ResolvedLight;
 use super::lights::{
-    LightCache, RenderLightRow, apply_light_renderables_update,
-    apply_lights_buffer_renderers_update,
+    LightCache, ResolvedLight, apply_light_renderables_update, apply_lights_buffer_renderers_update,
 };
 #[cfg(test)]
 use super::math::multiply_root;
@@ -57,21 +53,9 @@ fn render_world_header_changed(
     let Some(space) = space else {
         return true;
     };
-    let update_view_transform = if update.override_view_position {
-        update.overriden_view_transform
-    } else {
-        update.root_transform
-    };
     space.is_active != update.is_active
         || space.is_overlay != update.is_overlay
-        || space.override_view_position != update.override_view_position
         || space.view_position_is_external != update.view_position_is_external
-        || render_transform_changed(&space.root_transform, &update.root_transform)
-        || render_transform_changed(&space.view_transform, &update_view_transform)
-}
-
-fn render_transform_changed(a: &RenderTransform, b: &RenderTransform) -> bool {
-    a.position != b.position || a.scale != b.scale || a.rotation != b.rotation
 }
 
 fn extracted_update_affects_render_world(update: &ExtractedRenderSpaceUpdate) -> bool {
@@ -81,12 +65,6 @@ fn extracted_update_affects_render_world(update: &ExtractedRenderSpaceUpdate) ->
         || update.layers.is_some()
         || update.transform_overrides.is_some()
         || update.material_overrides.is_some()
-}
-
-/// Returns whether a render-space update changes renderer-facing light rows.
-fn update_affects_render_lights(update: &RenderSpaceUpdate) -> bool {
-    let view = light_updates_view(update);
-    view.lights_update.is_some() || view.lights_buffer_renderers_update.is_some()
 }
 
 #[cfg(test)]
@@ -250,7 +228,6 @@ impl SceneCoordinator {
     ///
     /// This uses the same transform basis as view draw collection so clustered-light culling and
     /// forward shading see lights in the same world space as the meshes for that view.
-    #[cfg(test)]
     pub fn resolve_lights_for_render_context_into(
         &self,
         id: RenderSpaceId,
@@ -271,15 +248,6 @@ impl SceneCoordinator {
             },
             out,
         );
-    }
-
-    /// Appends renderer-facing light rows for `id` into `out`.
-    pub fn render_light_rows_for_space_into(
-        &self,
-        id: RenderSpaceId,
-        out: &mut Vec<RenderLightRow>,
-    ) {
-        self.light_cache.render_light_rows_for_space_into(id.0, out);
     }
 
     /// Read-only access for debugging / future systems.
@@ -602,10 +570,7 @@ impl SceneCoordinator {
                 self.world_caches.entry(id).or_default();
 
                 let extracted = extract_render_space_update(shm, update, data.frame_index)?;
-                if header_dirty
-                    || extracted_update_affects_render_world(&extracted)
-                    || update_affects_render_lights(update)
-                {
+                if header_dirty || extracted_update_affects_render_world(&extracted) {
                     report.note_changed_space(id);
                 }
                 extracted_per_space.push(extracted);

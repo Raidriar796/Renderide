@@ -18,19 +18,15 @@ mod tests;
 
 use hashbrown::HashMap;
 
-#[cfg(test)]
 use glam::{Mat4, Vec3};
 
 use crate::color_space::srgb_vec3_to_linear;
 use crate::scene::transforms::TransformRemovalEvent;
 use crate::shared::{LightData, LightsBufferRendererState};
 
-#[cfg(test)]
-use super::types::ResolvedLight;
-use super::types::{CachedLight, RenderLightRow};
+use super::types::{CachedLight, ResolvedLight};
 
 /// Local axis for light propagation before world transform (host forward = **+Z**).
-#[cfg(test)]
 const LOCAL_LIGHT_PROPAGATION: Vec3 = Vec3::new(0.0, 0.0, 1.0);
 
 /// Sentinel marking an entry whose transform was removed outright -- dropped during the retain
@@ -181,15 +177,6 @@ impl LightCache {
         self.spaces.get(&space_id).map(Vec::as_slice)
     }
 
-    /// Appends renderer-facing light rows for `space_id` into `out`.
-    pub fn render_light_rows_for_space_into(&self, space_id: i32, out: &mut Vec<RenderLightRow>) {
-        let Some(lights) = self.get_lights_for_space(space_id) else {
-            return;
-        };
-        out.reserve(lights.len());
-        out.extend(lights.iter().map(RenderLightRow::from));
-    }
-
     /// Drops all light entries tied to a removed render space.
     pub fn remove_space(&mut self, space_id: i32) {
         self.spaces.remove(&space_id);
@@ -211,7 +198,6 @@ impl LightCache {
     }
 
     /// Like [`Self::resolve_lights`], but appends into `out` (caller clears when replacing content).
-    #[cfg(test)]
     pub fn resolve_lights_into(
         &self,
         space_id: i32,

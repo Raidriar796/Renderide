@@ -7,17 +7,14 @@ use super::cluster_layout::{
 use super::*;
 
 use glam::{Mat4, Quat, Vec3};
-use hashbrown::HashMap;
 
 use crate::camera::ViewId;
-use crate::gpu_pools::MeshPool;
 use crate::mesh_deform::{SkinCacheKey, SkinCacheRendererKind};
 use crate::render_graph::frame_params::PreRecordViewResourceLayout;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::{
     LightData, LightType, LightsBufferRendererState, RenderTransform, RenderingContext, ShadowType,
 };
-use crate::world_mesh::RenderWorld;
 
 /// Builds a pre-record layout for pure frame-resource planning tests.
 fn pre_record_layout(
@@ -265,7 +262,7 @@ fn prepare_lights_from_scene_skips_inactive_spaces() {
 }
 
 #[test]
-fn prepare_lights_for_views_from_render_worlds_keeps_secondary_light_positions_view_local() {
+fn prepare_lights_for_views_keeps_secondary_light_positions_view_local() {
     let mut scene = SceneCoordinator::new();
     let space = RenderSpaceId(7);
     let local = RenderTransform {
@@ -287,16 +284,11 @@ fn prepare_lights_for_views_from_render_worlds_keeps_secondary_light_positions_v
     cache.store_full(100, vec![make_light_data(1.0)]);
     cache.apply_update(space.0, &[], &[0], &[make_state(100)]);
 
-    let mesh_pool = MeshPool::default_pool();
-    let mut render_world = RenderWorld::new(RenderingContext::UserView);
-    render_world.prepare_for_frame(&scene, &mesh_pool, RenderingContext::UserView);
-    let render_worlds = HashMap::from_iter([(RenderingContext::UserView as u8, render_world)]);
-
     let first = ViewId::secondary_camera(space, 0);
     let second = ViewId::secondary_camera(space, 1);
     let mut mgr = FrameResourceManager::new();
-    mgr.prepare_lights_for_views_from_render_worlds(
-        &render_worlds,
+    mgr.prepare_lights_for_views(
+        &scene,
         [
             FrameLightViewDesc {
                 view_id: first,

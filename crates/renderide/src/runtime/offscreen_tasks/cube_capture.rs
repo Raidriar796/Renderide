@@ -512,22 +512,20 @@ pub(in crate::runtime) fn render_cube_capture_faces_offscreen(
 ) -> Result<(), GraphExecuteError> {
     profiling::scope!("cube_capture::offscreen_render");
     let prepared_views = PreparedViews::new(plans, None);
+    backend.prepare_lights_for_views(
+        scene,
+        prepared_views
+            .plans()
+            .iter()
+            .map(FrameViewPlan::light_view_desc),
+    );
     let view_perms = prepared_views
         .plans()
         .iter()
         .map(|plan| (plan.render_context(), plan.shader_permutation()))
         .collect::<Vec<_>>();
-    let light_descs = prepared_views
-        .plans()
-        .iter()
-        .map(FrameViewPlan::light_view_desc)
-        .collect::<Vec<_>>();
-    let shared = backend.extract_frame_shared(
-        scene,
-        WorldMeshDrawCollectParallelism::Full,
-        &view_perms,
-        &light_descs,
-    );
+    let shared =
+        backend.extract_frame_shared(scene, WorldMeshDrawCollectParallelism::Full, &view_perms);
     let submit_frame = ExtractedFrame::new(prepared_views, shared)
         .prepare_draws()
         .into_submit_frame();

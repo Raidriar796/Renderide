@@ -27,43 +27,12 @@ fn empty_extracted_render_space_update() -> ExtractedRenderSpaceUpdate {
 }
 
 #[test]
-fn render_world_header_clean_when_render_world_header_matches() {
-    let xform = RenderTransform {
-        position: Vec3::new(1.0, 2.0, 3.0),
-        scale: Vec3::ONE,
-        rotation: Quat::IDENTITY,
-    };
-    let space = RenderSpaceState {
-        is_active: true,
-        is_overlay: false,
-        view_position_is_external: false,
-        root_transform: xform,
-        view_transform: xform,
-        ..Default::default()
-    };
-    let update = RenderSpaceUpdate {
-        is_active: true,
-        is_overlay: false,
-        view_position_is_external: false,
-        root_transform: xform,
-        ..RenderSpaceUpdate::default()
-    };
-
-    assert!(!render_world_header_changed(Some(&space), &update));
-}
-
-#[test]
-fn render_world_header_dirty_tracks_root_transform_changes() {
+fn render_world_header_dirty_ignores_view_only_header_changes() {
     let space = RenderSpaceState {
         is_active: true,
         is_overlay: false,
         view_position_is_external: false,
         root_transform: RenderTransform {
-            position: Vec3::new(1.0, 2.0, 3.0),
-            scale: Vec3::ONE,
-            rotation: Quat::IDENTITY,
-        },
-        view_transform: RenderTransform {
             position: Vec3::new(1.0, 2.0, 3.0),
             scale: Vec3::ONE,
             rotation: Quat::IDENTITY,
@@ -82,7 +51,7 @@ fn render_world_header_dirty_tracks_root_transform_changes() {
         ..RenderSpaceUpdate::default()
     };
 
-    assert!(render_world_header_changed(Some(&space), &update));
+    assert!(!render_world_header_changed(Some(&space), &update));
 }
 
 #[test]

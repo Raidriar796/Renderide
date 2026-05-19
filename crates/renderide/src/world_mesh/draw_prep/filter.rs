@@ -48,21 +48,6 @@ impl CameraTransformDrawFilter {
         }
     }
 
-    /// Returns `true` if `node_id` should be rendered using prepared parent rows.
-    pub fn passes_node_with_parents(&self, node_id: i32, parents: &[i32]) -> bool {
-        if let Some(only) = &self.only {
-            if only.is_empty() {
-                return false;
-            }
-            node_or_ancestor_in_set_from_parents(node_id, parents, only)
-        } else {
-            if self.exclude.is_empty() {
-                return true;
-            }
-            !node_or_ancestor_in_set_from_parents(node_id, parents, &self.exclude)
-        }
-    }
-
     /// Precomputes `passes_scene_node` for every node in `space_id` so per-draw filtering
     /// becomes an O(1) index lookup instead of repeated ancestor walks.
     ///
@@ -87,42 +72,6 @@ impl CameraTransformDrawFilter {
             Some(excl.into_iter().map(|e| !e).collect())
         }
     }
-
-    /// Precomputes `passes_node_with_parents` for every node in `parents`.
-    pub fn build_pass_mask_from_parents(&self, parents: &[i32]) -> Vec<bool> {
-        let n = parents.len();
-        if let Some(only) = &self.only {
-            if only.is_empty() {
-                return vec![false; n];
-            }
-            ancestor_membership_mask_from_parents(parents, only)
-        } else if self.exclude.is_empty() {
-            vec![true; n]
-        } else {
-            let excl = ancestor_membership_mask_from_parents(parents, &self.exclude);
-            excl.into_iter().map(|e| !e).collect()
-        }
-    }
-}
-
-fn node_or_ancestor_in_set_from_parents(node_id: i32, parents: &[i32], set: &HashSet<i32>) -> bool {
-    if node_id < 0 || set.is_empty() {
-        return false;
-    }
-    let mut cursor = node_id;
-    for _ in 0..parents.len() {
-        if set.contains(&cursor) {
-            return true;
-        }
-        let Some(&parent) = parents.get(cursor as usize) else {
-            return false;
-        };
-        if parent < 0 || parent == cursor || parent as usize >= parents.len() {
-            return false;
-        }
-        cursor = parent;
-    }
-    false
 }
 
 fn node_or_ancestor_in_set(
@@ -211,70 +160,6 @@ fn ancestor_membership_mask(
                 break;
             }
             let Some(&parent) = space.node_parents().get(cu) else {
-                hit = false;
-                break;
-            };
-            if parent < 0 || parent == cur {
-                hit = false;
-                break;
-            }
-            cur = parent;
-        }
-        let marker = if hit { 1u8 } else { 2u8 };
-        for &p in &path {
-            cache[p] = marker;
-        }
-    }
-    cache.into_iter().map(|v| v == 1).collect()
-}
-
-/// Memoized ancestor-membership scan over prepared parent rows.
-fn ancestor_membership_mask_from_parents(parents: &[i32], set: &HashSet<i32>) -> Vec<bool> {
-    let n = parents.len();
-    if n == 0 || set.is_empty() {
-        return vec![false; n];
-    }
-    let mut cache: Vec<u8> = vec![0; n];
-    let mut path: Vec<usize> = Vec::with_capacity(32);
-    for start in 0..n {
-        if cache[start] != 0 {
-            continue;
-        }
-        path.clear();
-        let mut cur = start as i32;
-        let hit;
-        loop {
-            if cur < 0 {
-                hit = false;
-                break;
-            }
-            let cu = cur as usize;
-            if cu >= n {
-                hit = false;
-                break;
-            }
-            match cache[cu] {
-                1 => {
-                    hit = true;
-                    break;
-                }
-                2 => {
-                    hit = false;
-                    break;
-                }
-                _ => {}
-            }
-            if set.contains(&cur) {
-                cache[cu] = 1;
-                hit = true;
-                break;
-            }
-            path.push(cu);
-            if path.len() > n {
-                hit = false;
-                break;
-            }
-            let Some(&parent) = parents.get(cu) else {
                 hit = false;
                 break;
             };

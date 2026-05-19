@@ -15,27 +15,6 @@ pub struct CachedLight {
     pub transform_id: usize,
 }
 
-/// Renderer-facing light row exported from the scene mirror.
-#[derive(Clone, Debug)]
-pub struct RenderLightRow {
-    /// Local-space pose and linear RGB color.
-    pub data: LightData,
-    /// Renderable state used by GPU light packing.
-    pub state: LightsBufferRendererState,
-    /// Dense transform index for world matrix lookup.
-    pub transform_id: usize,
-}
-
-impl From<&CachedLight> for RenderLightRow {
-    fn from(value: &CachedLight) -> Self {
-        Self {
-            data: value.data,
-            state: value.state,
-            transform_id: value.transform_id,
-        }
-    }
-}
-
 /// Resolved light in world space, ready for GPU packing and shading.
 #[derive(Clone, Debug)]
 pub struct ResolvedLight {

@@ -35,8 +35,8 @@
 //!
 //! [`LightCache`](lights::LightCache) merges [`FrameSubmitData`](crate::shared::FrameSubmitData) light
 //! batches and [`LightsBufferRendererSubmission`](crate::shared::LightsBufferRendererSubmission) payloads;
-//! [`SceneCoordinator::render_light_rows_for_space_into`] produces [`RenderLightRow`] rows for
-//! backend-owned render-world tables.
+//! [`SceneCoordinator::resolve_lights_for_render_context_into`] produces [`ResolvedLight`] rows
+//! for GPU packing in the backend.
 //!
 //! ## Layout
 //!
@@ -70,9 +70,7 @@ mod world;
 pub use camera::CameraRenderableEntry;
 pub use coordinator::{SceneApplyReport, SceneCacheFlushReport, SceneCoordinator};
 pub use ids::RenderSpaceId;
-pub use lights::{
-    RenderLightRow, ResolvedLight, light_contributes, light_has_negative_contribution,
-};
+pub use lights::{ResolvedLight, light_contributes, light_has_negative_contribution};
 pub use math::render_transform_to_matrix;
 pub use meshes::types::{
     MeshMaterialSlot, MeshRendererInstanceId, SkinnedMeshRenderer, StaticMeshRenderer,
