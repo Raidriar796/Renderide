@@ -6,8 +6,6 @@ labels: enhancement
 assignees: ""
 ---
 
-**Summary**
-
 **Problem / use case**
 
 **Desired outcome**
