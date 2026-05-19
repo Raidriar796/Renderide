@@ -138,7 +138,10 @@ pub fn collect_and_sort_draws_with_parallelism(
     };
     let cap_hint = {
         profiling::scope!("mesh::collect_and_sort::estimate_capacity");
-        estimate_active_renderable_count(space_ids, ctx)
+        ctx.prepared.map_or_else(
+            || estimate_active_renderable_count(space_ids, ctx),
+            |p| p.len(),
+        )
     };
 
     let owned_cache;

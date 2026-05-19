@@ -1,7 +1,12 @@
 //! Light preparation and per-view light access for [`FrameResourceManager`].
 
+use hashbrown::HashMap;
+
 use crate::camera::ViewId;
-use crate::scene::{SceneCoordinator, light_contributes, light_has_negative_contribution};
+#[cfg(test)]
+use crate::scene::SceneCoordinator;
+use crate::scene::{light_contributes, light_has_negative_contribution};
+use crate::world_mesh::RenderWorld;
 
 use super::super::light_gpu::{
     GpuLight, MAX_LIGHTS, gpu_light_from_resolved, order_lights_for_clustered_shading_in_place,
@@ -61,6 +66,7 @@ impl FrameResourceManager {
     /// space. Non-contributing lights are filtered via [`light_contributes`] before clustered
     /// ordering, and each view's transforms are resolved with the same render context and
     /// head-output transform used by draw collection.
+    #[cfg(test)]
     pub(crate) fn prepare_lights_for_views<I>(&mut self, scene: &SceneCoordinator, views: I)
     where
         I: IntoIterator<Item = FrameLightViewDesc>,
@@ -90,6 +96,40 @@ impl FrameResourceManager {
         }
     }
 
+    /// Fills per-view light scratch buffers from backend-owned render-world tables.
+    pub(crate) fn prepare_lights_for_views_from_render_worlds<I>(
+        &mut self,
+        render_worlds: &HashMap<u8, RenderWorld>,
+        views: I,
+    ) where
+        I: IntoIterator<Item = FrameLightViewDesc>,
+    {
+        profiling::scope!("render::prepare_lights_for_views");
+        self.light_scratch.clear();
+        self.signed_scene_color_required = false;
+        let mut wrote_fallback = false;
+        for desc in views {
+            self.prepare_lights_for_view_from_render_worlds(render_worlds, desc);
+            self.signed_scene_color_required |= self
+                .per_view_lights
+                .get(desc.view_id)
+                .is_some_and(|lights| lights.signed_scene_color_required);
+            if !wrote_fallback {
+                let fallback_lights = self.frame_lights_for_view(desc.view_id).to_vec();
+                self.light_scratch.clear();
+                self.light_scratch.extend(fallback_lights);
+                wrote_fallback = true;
+            }
+        }
+        if self.signed_scene_color_required && !self.signed_scene_color_required_logged {
+            logger::info!(
+                "negative direct lights active: signed scene-color HDR will be used while negative lights are packed"
+            );
+            self.signed_scene_color_required_logged = true;
+        }
+    }
+
+    #[cfg(test)]
     fn prepare_lights_for_view(&mut self, scene: &SceneCoordinator, desc: FrameLightViewDesc) {
         profiling::scope!("render::prepare_lights_for_view");
         self.resolved_flatten_scratch.clear();
@@ -136,6 +176,77 @@ impl FrameResourceManager {
         );
     }
 
+    fn prepare_lights_for_view_from_render_worlds(
+        &mut self,
+        render_worlds: &HashMap<u8, RenderWorld>,
+        desc: FrameLightViewDesc,
+    ) {
+        profiling::scope!("render::prepare_lights_for_view");
+        self.resolved_flatten_scratch.clear();
+        let context_key = desc.render_context as u8;
+        let Some(render_world) = render_worlds.get(&context_key) else {
+            self.write_prepared_view_lights(desc, 0);
+            return;
+        };
+        render_world
+            .collect_light_space_ids(desc.render_space_filter, &mut self.light_space_ids_scratch);
+        for &id in &self.light_space_ids_scratch {
+            render_world.resolve_lights_for_space_into(
+                id,
+                desc.head_output_transform,
+                &mut self.resolved_flatten_scratch,
+            );
+        }
+        {
+            profiling::scope!("render::prepare_lights::filter_contributors");
+            self.resolved_flatten_scratch.retain(light_contributes);
+        }
+        order_lights_for_clustered_shading_in_place(&mut self.resolved_flatten_scratch);
+        let kept = self.warn_and_compute_kept_light_count();
+        self.write_prepared_view_lights(desc, kept);
+    }
+
+    fn warn_and_compute_kept_light_count(&mut self) -> usize {
+        let resolved_len = self.resolved_flatten_scratch.len();
+        if resolved_len > MAX_LIGHTS && !self.lights_overflow_warned {
+            logger::warn!(
+                "scene contains {resolved_len} contributing lights but the engine only uploads \
+                 the first {MAX_LIGHTS} (MAX_LIGHTS); the remainder will be ignored for shading. \
+                 This warning is only logged once per renderer instance."
+            );
+            self.lights_overflow_warned = true;
+        }
+        resolved_len.min(MAX_LIGHTS)
+    }
+
+    fn write_prepared_view_lights(&mut self, desc: FrameLightViewDesc, kept: usize) {
+        let signed_scene_color_required = self
+            .resolved_flatten_scratch
+            .iter()
+            .take(kept)
+            .any(light_has_negative_contribution);
+        let entry = self
+            .per_view_lights
+            .get_or_insert_with(desc.view_id, PreparedViewLights::default);
+        entry.lights.clear();
+        entry.lights.reserve(kept);
+        entry.lights.extend(
+            self.resolved_flatten_scratch
+                .iter()
+                .take(kept)
+                .map(gpu_light_from_resolved),
+        );
+        entry.signed_scene_color_required = signed_scene_color_required;
+        logger::trace!(
+            "prepared lights for view {:?}: lights={} render_context={:?} render_space_filter={:?}",
+            desc.view_id,
+            entry.lights.len(),
+            desc.render_context,
+            desc.render_space_filter
+        );
+    }
+
+    #[cfg(test)]
     fn collect_light_space_ids(
         &mut self,
         scene: &SceneCoordinator,
@@ -156,6 +267,7 @@ impl FrameResourceManager {
         );
     }
 
+    #[cfg(test)]
     fn resolve_lights_for_space_ids(&mut self, scene: &SceneCoordinator, desc: FrameLightViewDesc) {
         if self.light_space_ids_scratch.is_empty() {
             return;

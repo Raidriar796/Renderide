@@ -14,7 +14,8 @@
 
 mod expand;
 
-use hashbrown::HashSet;
+use glam::{Mat4, Vec3};
+use hashbrown::{HashMap, HashSet};
 #[cfg(test)]
 use rayon::prelude::*;
 
@@ -23,7 +24,7 @@ use crate::gpu_pools::MeshPool;
 #[cfg(test)]
 use crate::scene::SceneCoordinator;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
-use crate::shared::RenderingContext;
+use crate::shared::{RenderBoundingBox, RenderTransform, RenderingContext};
 use crate::world_mesh::culling::MeshCullGeometry;
 
 use expand::{empty_material_key_signature, populate_runs_and_material_keys};
@@ -32,9 +33,121 @@ pub(in crate::world_mesh::draw_prep) use expand::estimated_draw_count;
 #[cfg(test)]
 pub(in crate::world_mesh::draw_prep) use expand::expand_space_into;
 pub(in crate::world_mesh::draw_prep) use expand::expand_space_into_aggressive;
+pub(in crate::world_mesh::draw_prep) use expand::mesh_cull_geometry_from_prepared;
 
 /// Target draw count for one prepared renderer-run chunk.
 pub(super) const PREPARED_RUN_CHUNK_DRAW_TARGET: usize = 64;
+
+/// Renderer-facing transform and header data for one render space.
+#[derive(Clone, Debug)]
+pub(super) struct FramePreparedSpace {
+    /// Whether the render space itself is overlay-rooted against the view.
+    pub is_overlay_space: bool,
+    /// Space root transform used to re-root overlay spaces per view.
+    pub root_transform: RenderTransform,
+    /// World-to-view matrix for this render space.
+    pub view_matrix: Mat4,
+    /// Parent transform indices for filter-mask construction.
+    pub node_parents: Vec<i32>,
+    /// Render-context-resolved hierarchy matrices by transform index before overlay-space re-rooting.
+    pub context_world_matrices: Vec<Option<Mat4>>,
+    /// Render-context-resolved degenerate-scale flags by transform index.
+    pub degenerate_scales: Vec<bool>,
+    /// Overlay-layer model matrices by transform index.
+    pub overlay_layer_model_matrices: Vec<Option<Mat4>>,
+}
+
+impl FramePreparedSpace {
+    /// Returns the render-context hierarchy matrix for `node_id`.
+    #[inline]
+    pub(super) fn context_world_matrix(&self, node_id: i32) -> Option<Mat4> {
+        if node_id < 0 {
+            return None;
+        }
+        self.context_world_matrices
+            .get(node_id as usize)
+            .copied()
+            .flatten()
+    }
+
+    /// Returns the overlay-layer model matrix for `node_id`.
+    #[inline]
+    pub(super) fn overlay_layer_model_matrix(&self, node_id: i32) -> Option<Mat4> {
+        if node_id < 0 {
+            return None;
+        }
+        self.overlay_layer_model_matrices
+            .get(node_id as usize)
+            .copied()
+            .flatten()
+    }
+
+    /// Returns whether `node_id` has a degenerate render-context transform chain.
+    #[inline]
+    pub(super) fn transform_has_degenerate_scale(&self, node_id: i32) -> bool {
+        node_id >= 0
+            && self
+                .degenerate_scales
+                .get(node_id as usize)
+                .copied()
+                .unwrap_or(false)
+    }
+
+    /// Returns a model matrix for a local vertex stream in this render space.
+    #[inline]
+    pub(super) fn local_vertex_model_matrix(
+        &self,
+        node_id: i32,
+        is_overlay_layer: bool,
+        head_output_transform: Mat4,
+    ) -> Option<Mat4> {
+        if is_overlay_layer {
+            return self.overlay_layer_model_matrix(node_id);
+        }
+        let local = self.context_world_matrix(node_id)?;
+        if self.is_overlay_space {
+            Some(overlay_space_root_matrix(self.root_transform, head_output_transform) * local)
+        } else {
+            Some(local)
+        }
+    }
+
+    /// Returns a model matrix for a transform resolved like scene light placement.
+    #[inline]
+    pub(super) fn render_context_model_matrix(
+        &self,
+        node_id: i32,
+        head_output_transform: Mat4,
+    ) -> Option<Mat4> {
+        let local = self.context_world_matrix(node_id)?;
+        if self.is_overlay_space {
+            Some(overlay_space_root_matrix(self.root_transform, head_output_transform) * local)
+        } else {
+            Some(local)
+        }
+    }
+}
+
+/// Builds the per-view root transform used for overlay render spaces.
+pub(super) fn overlay_space_root_matrix(
+    root_transform: RenderTransform,
+    head_output_transform: Mat4,
+) -> Mat4 {
+    let (scale, rotation, position) = head_output_transform.to_scale_rotation_translation();
+    let scale = filter_overlay_scale(scale);
+    let position = position - root_transform.position;
+    let rotation = rotation * root_transform.rotation;
+    Mat4::from_scale_rotation_translation(scale, rotation, position)
+}
+
+/// Filters degenerate overlay root scale so screen-space models stay finite.
+fn filter_overlay_scale(scale: Vec3) -> Vec3 {
+    if scale.x.min(scale.y).min(scale.z) <= 1e-8 {
+        Vec3::ONE
+    } else {
+        scale
+    }
+}
 
 /// One fully-resolved draw slot (renderer x material slot mapped to a submesh range) for the current frame.
 ///
@@ -70,6 +183,16 @@ pub(super) struct FramePreparedDraw {
     pub blendshape_deformed: bool,
     /// Cached active tangent-blendshape state used when a material needs tangent-space shading.
     pub tangent_blendshape_deform_active: bool,
+    /// Whether the owning render space is overlay-rooted against the view.
+    pub space_is_overlay: bool,
+    /// Render-context world matrix for the renderer transform before overlay-space re-rooting.
+    pub context_world_matrix: Option<Mat4>,
+    /// Overlay-layer model matrix when the renderer inherits the overlay layer.
+    pub overlay_layer_model_matrix: Option<Mat4>,
+    /// Render-context world matrix for the skinned root transform before overlay-space re-rooting.
+    pub skinned_root_world_matrix: Option<Mat4>,
+    /// Host-provided posed skinned bounds in the renderer-root local frame.
+    pub posed_object_bounds: Option<RenderBoundingBox>,
     /// Material-slot index within the renderer's slot / primary fallback list.
     pub slot_index: usize,
     /// First index in the mesh index buffer for the selected submesh range.
@@ -142,6 +265,8 @@ fn populate_run_chunks(
 pub struct FramePreparedRenderables {
     /// Active render spaces captured while building this frame snapshot.
     active_space_ids: Vec<RenderSpaceId>,
+    /// Renderer-facing space metadata keyed by render space id.
+    spaces: HashMap<RenderSpaceId, FramePreparedSpace>,
     /// Dense expanded draws. Order is deterministic: render spaces in
     /// [`SceneCoordinator::render_space_ids`] order, then static renderers (ascending index),
     /// then skinned renderers (ascending index), then material slots in ascending index.
@@ -177,6 +302,7 @@ impl FramePreparedRenderables {
     pub fn empty(render_context: RenderingContext) -> Self {
         Self {
             active_space_ids: Vec::new(),
+            spaces: HashMap::new(),
             draws: Vec::new(),
             runs: Vec::new(),
             run_chunks: Vec::new(),
@@ -224,6 +350,7 @@ impl FramePreparedRenderables {
         profiling::scope!("mesh::prepared_renderables_build_for_frame");
         self.render_context = render_context;
         self.active_space_ids.clear();
+        self.spaces.clear();
         self.draws.clear();
         self.runs.clear();
         self.run_chunks.clear();
@@ -236,6 +363,13 @@ impl FramePreparedRenderables {
                     .render_space_ids()
                     .filter(|id| scene.space(*id).is_some_and(|s| s.is_active())),
             );
+            for &id in &self.active_space_ids {
+                if let Some(space) =
+                    super::render_world::build_prepared_space_from_scene(scene, id, render_context)
+                {
+                    self.spaces.insert(id, space);
+                }
+            }
         }
 
         if self.active_space_ids.is_empty() {
@@ -248,6 +382,10 @@ impl FramePreparedRenderables {
             {
                 profiling::scope!("mesh::prepared_renderables::single_space_expand");
                 self.draws.reserve(estimated_draw_count(scene, space_id));
+                let Some(space_meta) = self.spaces.get(&space_id) else {
+                    self.refresh_runs_material_keys_and_chunks();
+                    return;
+                };
                 expand_space_into_aggressive(
                     &mut self.draws,
                     &mut self.space_scratch,
@@ -255,6 +393,7 @@ impl FramePreparedRenderables {
                     mesh_pool,
                     render_context,
                     space_id,
+                    space_meta,
                 );
             }
             self.refresh_runs_material_keys_and_chunks();
@@ -271,6 +410,7 @@ impl FramePreparedRenderables {
             space_scratch.resize_with(self.active_space_ids.len(), Vec::new);
         }
         let active_space_ids = &self.active_space_ids;
+        let spaces = &self.spaces;
 
         {
             profiling::scope!("mesh::prepared_renderables::parallel_expand");
@@ -284,7 +424,10 @@ impl FramePreparedRenderables {
                     if estimate > out.capacity() {
                         out.reserve(estimate - out.capacity());
                     }
-                    expand_space_into(out, scene, mesh_pool, render_context, space_id);
+                    let Some(space_meta) = spaces.get(&space_id) else {
+                        return;
+                    };
+                    expand_space_into(out, scene, mesh_pool, render_context, space_id, space_meta);
                 });
         }
 
@@ -382,8 +525,8 @@ impl FramePreparedRenderables {
         self.material_property_key_signature
     }
 
-    /// Rebuilds this snapshot in place from the supplied iterator of cached `(space, draws)`
-    /// pairs. Used by [`super::render_world::RenderWorld`] when refreshing its persistent cache.
+    /// Rebuilds this snapshot in place from cached `(space id, space metadata, draws)` tuples.
+    /// Used by [`super::render_world::RenderWorld`] when refreshing its persistent cache.
     ///
     /// Keeps the underlying `Vec` capacities so the steady-state rebuild path does not drop the
     /// backing buffers each frame.
@@ -392,18 +535,32 @@ impl FramePreparedRenderables {
         render_context: RenderingContext,
         active_with_draws: I,
     ) where
-        I: IntoIterator<Item = (RenderSpaceId, &'a [FramePreparedDraw])>,
+        I: IntoIterator<
+            Item = (
+                RenderSpaceId,
+                &'a FramePreparedSpace,
+                &'a [FramePreparedDraw],
+            ),
+        >,
     {
         self.render_context = render_context;
         self.active_space_ids.clear();
+        self.spaces.clear();
         self.draws.clear();
         self.runs.clear();
         self.run_chunks.clear();
-        for (id, draws) in active_with_draws {
+        for (id, space, draws) in active_with_draws {
             self.active_space_ids.push(id);
+            self.spaces.insert(id, space.clone());
             self.draws.extend(draws.iter().cloned());
         }
         self.refresh_runs_material_keys_and_chunks();
+    }
+
+    /// Prepared render-space metadata for `id`.
+    #[inline]
+    pub(super) fn space(&self, id: RenderSpaceId) -> Option<&FramePreparedSpace> {
+        self.spaces.get(&id)
     }
 }
 
@@ -436,6 +593,11 @@ mod tests {
             world_space_deformed: false,
             blendshape_deformed: false,
             tangent_blendshape_deform_active: false,
+            space_is_overlay: false,
+            context_world_matrix: None,
+            overlay_layer_model_matrix: None,
+            skinned_root_world_matrix: None,
+            posed_object_bounds: None,
             slot_index: 0,
             first_index: 0,
             index_count: 3,

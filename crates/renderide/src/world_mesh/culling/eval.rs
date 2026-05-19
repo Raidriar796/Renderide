@@ -18,7 +18,6 @@ use crate::occlusion::HiZCullData;
 use crate::occlusion::hi_z_view_proj_matrices;
 use crate::occlusion::mesh_fully_occluded_in_hiz;
 use crate::occlusion::stereo_hiz_keeps_draw;
-use crate::scene::SceneCoordinator;
 
 /// Frustum acceptance for one world AABB using the same stereo / overlay rules as the forward pass.
 fn cpu_cull_frustum_visible(
@@ -117,9 +116,19 @@ pub(crate) fn mesh_draw_passes_cpu_cull(
     ui_rect_clip_local: Option<Vec4>,
 ) -> Result<Option<Mat4>, CpuCullFailure> {
     let geom = mesh_world_geometry_for_cull(target, culling, render_context);
+    let view = target
+        .scene
+        .space(target.space_id)
+        .map(|space| {
+            culling
+                .host_camera
+                .explicit_world_to_view()
+                .unwrap_or_else(|| view_matrix_for_world_mesh_render_space(target.scene, space))
+        })
+        .unwrap_or(Mat4::IDENTITY);
     mesh_cpu_cull_with_geometry(
         geom,
-        target.scene,
+        view,
         target.space_id,
         is_overlay,
         culling,
@@ -136,27 +145,19 @@ pub(crate) fn mesh_draw_passes_cpu_cull(
 /// `ui_rect_clip_local` arg behaves the same as in [`mesh_draw_passes_cpu_cull`].
 pub(crate) fn mesh_cpu_cull_with_geometry(
     geom: MeshCullGeometry,
-    scene: &SceneCoordinator,
+    view: Mat4,
     space_id: RenderSpaceId,
     is_overlay: bool,
     culling: &WorldMeshCullInput<'_>,
     ui_rect_clip_local: Option<Vec4>,
 ) -> Result<Option<Mat4>, CpuCullFailure> {
     if is_overlay {
-        return cull_overlay_draw(scene, space_id, culling, ui_rect_clip_local, &geom);
+        return cull_overlay_draw(culling, ui_rect_clip_local, &geom);
     }
 
     let Some((wmin, wmax)) = geom.world_aabb else {
         return Ok(geom.rigid_world_matrix);
     };
-    let Some(space) = scene.space(space_id) else {
-        return Ok(geom.rigid_world_matrix);
-    };
-    let view = culling
-        .host_camera
-        .explicit_world_to_view()
-        .unwrap_or_else(|| view_matrix_for_world_mesh_render_space(scene, space));
-
     if !cpu_cull_frustum_visible(&culling.proj, is_overlay, view, wmin, wmax) {
         return Err(CpuCullFailure::Frustum);
     }
@@ -172,14 +173,12 @@ pub(crate) fn mesh_cpu_cull_with_geometry(
 /// already encodes screen-space position via
 /// [`crate::scene::SceneCoordinator::overlay_layer_model_matrix_for_context`].
 fn cull_overlay_draw(
-    scene: &SceneCoordinator,
-    space_id: RenderSpaceId,
     culling: &WorldMeshCullInput<'_>,
     ui_rect_clip_local: Option<Vec4>,
     geom: &MeshCullGeometry,
 ) -> Result<Option<Mat4>, CpuCullFailure> {
     if let (Some(rect), Some(model)) = (ui_rect_clip_local, geom.rigid_world_matrix)
-        && !overlay_rect_clip_visible(scene, space_id, culling, rect, model)
+        && !overlay_rect_clip_visible(culling, rect, model)
     {
         return Err(CpuCullFailure::UiRectMask);
     }
@@ -199,8 +198,6 @@ fn cull_overlay_draw(
 /// Skipped conservatively under stereo (`proj.vr_stereo.is_some()`) because the overlay
 /// projection path under stereo isn't covered yet.
 pub(crate) fn overlay_rect_clip_visible(
-    _scene: &SceneCoordinator,
-    _space_id: RenderSpaceId,
     culling: &WorldMeshCullInput<'_>,
     rect: Vec4,
     model: Mat4,
@@ -314,7 +311,7 @@ mod overlay_cull_tests {
 
     use super::{CpuCullFailure, mesh_cpu_cull_with_geometry};
     use crate::camera::HostCameraFrame;
-    use crate::scene::{RenderSpaceId, SceneCoordinator};
+    use crate::scene::RenderSpaceId;
     use crate::world_mesh::culling::{
         MeshCullGeometry, WorldMeshCullInput, WorldMeshCullProjParams,
     };
@@ -337,7 +334,6 @@ mod overlay_cull_tests {
 
     #[test]
     fn overlay_draws_bypass_world_space_frustum_checks() {
-        let scene = SceneCoordinator::new();
         let host_camera = HostCameraFrame::default();
         let culling = WorldMeshCullInput {
             proj: WorldMeshCullProjParams {
@@ -356,9 +352,14 @@ mod overlay_cull_tests {
             front_face_world_matrix: Some(model),
         };
 
-        let Ok(accepted) =
-            mesh_cpu_cull_with_geometry(geom, &scene, RenderSpaceId(999), true, &culling, None)
-        else {
+        let Ok(accepted) = mesh_cpu_cull_with_geometry(
+            geom,
+            Mat4::IDENTITY,
+            RenderSpaceId(999),
+            true,
+            &culling,
+            None,
+        ) else {
             panic!("overlay items should skip frustum/Hi-Z rejection");
         };
 
@@ -367,7 +368,6 @@ mod overlay_cull_tests {
 
     #[test]
     fn overlay_rect_outside_viewport_is_culled() {
-        let scene = SceneCoordinator::new();
         let host_camera = HostCameraFrame::default();
         let culling = culling_with_overlay_proj(&host_camera);
         // Translate the rect 10 units to the right -- well outside the [-1, 1] overlay frustum.
@@ -381,7 +381,7 @@ mod overlay_cull_tests {
 
         let res = mesh_cpu_cull_with_geometry(
             geom,
-            &scene,
+            Mat4::IDENTITY,
             RenderSpaceId(999),
             true,
             &culling,
@@ -392,7 +392,6 @@ mod overlay_cull_tests {
 
     #[test]
     fn overlay_rect_inside_viewport_passes() {
-        let scene = SceneCoordinator::new();
         let host_camera = HostCameraFrame::default();
         let culling = culling_with_overlay_proj(&host_camera);
         let model = Mat4::IDENTITY;
@@ -405,7 +404,7 @@ mod overlay_cull_tests {
 
         let res = mesh_cpu_cull_with_geometry(
             geom,
-            &scene,
+            Mat4::IDENTITY,
             RenderSpaceId(999),
             true,
             &culling,
@@ -416,7 +415,6 @@ mod overlay_cull_tests {
 
     #[test]
     fn overlay_without_rect_clip_still_passes() {
-        let scene = SceneCoordinator::new();
         let host_camera = HostCameraFrame::default();
         let culling = culling_with_overlay_proj(&host_camera);
         // Same off-screen model as the culled case -- without a rect the legacy fast-path must
@@ -428,8 +426,14 @@ mod overlay_cull_tests {
             front_face_world_matrix: Some(model),
         };
 
-        let res =
-            mesh_cpu_cull_with_geometry(geom, &scene, RenderSpaceId(999), true, &culling, None);
+        let res = mesh_cpu_cull_with_geometry(
+            geom,
+            Mat4::IDENTITY,
+            RenderSpaceId(999),
+            true,
+            &culling,
+            None,
+        );
         assert!(matches!(res, Ok(Some(m)) if m == model));
     }
 }

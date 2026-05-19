@@ -83,6 +83,11 @@ impl RenderBackend {
         self.draw_preparation.note_scene_cache_flush_report(report);
     }
 
+    /// Marks backend render worlds dirty after out-of-band light data changes.
+    pub(crate) fn note_scene_lights_changed(&mut self) {
+        self.draw_preparation.mark_all_render_worlds_dirty();
+    }
+
     fn purge_closed_render_space_resources(&mut self, removed_spaces: &[RenderSpaceId]) {
         if removed_spaces.is_empty() {
             return;
@@ -129,16 +134,6 @@ impl RenderBackend {
         retired.len()
     }
 
-    /// Prepares clustered-light frame resources for the planned views in one graph submission.
-    pub(crate) fn prepare_lights_for_views<I>(&mut self, scene: &SceneCoordinator, views: I)
-    where
-        I: IntoIterator<Item = FrameLightViewDesc>,
-    {
-        self.frame_services
-            .frame_resources
-            .prepare_lights_for_views(scene, views);
-    }
-
     /// Drains completed Hi-Z readbacks into CPU snapshots at the top of the tick.
     pub(crate) fn hi_z_begin_frame_readback(&self, device: &wgpu::Device) {
         self.occlusion.hi_z_begin_frame_readback(device);
@@ -156,7 +151,19 @@ impl RenderBackend {
         scene: &'a SceneCoordinator,
         inner_parallelism: WorldMeshDrawCollectParallelism,
         view_draw_preparations: &[(RenderingContext, ShaderPermutation)],
+        view_light_descs: &[FrameLightViewDesc],
     ) -> ExtractedFrameShared<'a> {
+        self.draw_preparation.prepare_render_worlds_for_views(
+            scene,
+            self.asset_transfers.mesh_pool(),
+            view_draw_preparations,
+        );
+        self.frame_services
+            .frame_resources
+            .prepare_lights_for_views_from_render_worlds(
+                self.draw_preparation.render_worlds(),
+                view_light_descs.iter().copied(),
+            );
         self.draw_preparation
             .extract_frame_shared(DrawPreparationExtractDesc {
                 scene,

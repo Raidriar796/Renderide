@@ -95,7 +95,7 @@ pub(super) fn evaluate_draw_candidate(
     if candidate.is_overlay
         && let (Some(rect), Some(model), Some(culling)) =
             (ui_rect_clip_local, rigid_world_matrix, ctx.culling)
-        && !overlay_rect_clip_visible(ctx.scene, candidate.space_id, culling, rect, model)
+        && !overlay_rect_clip_visible(culling, rect, model)
     {
         return None;
     }

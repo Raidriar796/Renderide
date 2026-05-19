@@ -9,4 +9,6 @@ mod types;
 
 pub use apply::{apply_light_renderables_update, apply_lights_buffer_renderers_update};
 pub use cache::LightCache;
-pub use types::{ResolvedLight, light_contributes, light_has_negative_contribution};
+pub use types::{
+    RenderLightRow, ResolvedLight, light_contributes, light_has_negative_contribution,
+};

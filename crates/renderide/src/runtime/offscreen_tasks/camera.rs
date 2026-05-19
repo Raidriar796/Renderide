@@ -470,20 +470,22 @@ fn render_camera_task_offscreen(
     profiling::scope!("camera_task::offscreen_render");
     let view_id = plan.view_id;
     let prepared_views = PreparedViews::new(vec![plan], None);
-    backend.prepare_lights_for_views(
-        scene,
-        prepared_views
-            .plans()
-            .iter()
-            .map(FrameViewPlan::light_view_desc),
-    );
     let view_perms = prepared_views
         .plans()
         .iter()
         .map(|plan| (plan.render_context(), plan.shader_permutation()))
         .collect::<Vec<_>>();
-    let shared =
-        backend.extract_frame_shared(scene, WorldMeshDrawCollectParallelism::Full, &view_perms);
+    let light_descs = prepared_views
+        .plans()
+        .iter()
+        .map(FrameViewPlan::light_view_desc)
+        .collect::<Vec<_>>();
+    let shared = backend.extract_frame_shared(
+        scene,
+        WorldMeshDrawCollectParallelism::Full,
+        &view_perms,
+        &light_descs,
+    );
     let submit_frame = ExtractedFrame::new(prepared_views, shared)
         .prepare_draws()
         .into_submit_frame();

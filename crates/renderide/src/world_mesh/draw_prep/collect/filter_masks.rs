@@ -18,7 +18,13 @@ pub(super) fn build_per_space_filter_masks(
             .iter()
             .copied()
             .filter_map(|sid| {
-                let mask = ctx.transform_filter?.build_pass_mask(ctx.scene, sid)?;
+                let filter = ctx.transform_filter?;
+                let mask = if let Some(prepared) = ctx.prepared {
+                    let space = prepared.space(sid)?;
+                    filter.build_pass_mask_from_parents(&space.node_parents)
+                } else {
+                    filter.build_pass_mask(ctx.scene, sid)?
+                };
                 Some((sid, mask))
             })
             .collect()

@@ -4,7 +4,7 @@
 //! [`MaterialPropertyStore`](crate::materials::host_data::MaterialPropertyStore), the compiled
 //! [`CompiledRenderGraph`](crate::render_graph::CompiledRenderGraph) after attach, and code paths
 //! that turn shared-memory asset payloads into resident GPU resources. [`light_gpu`](crate::backend::light_gpu)
-//! packs scene [`ResolvedLight`](crate::scene::ResolvedLight) values for future storage-buffer upload. It does **not**
+//! packs render-world [`ResolvedLight`](crate::scene::ResolvedLight) values for future storage-buffer upload. It does **not**
 //! own IPC queues, [`SharedMemoryAccessor`](crate::ipc::SharedMemoryAccessor), or scene graph state;
 //! callers pass those in where a command requires both transport and GPU work.
 

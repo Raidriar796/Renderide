@@ -119,16 +119,6 @@ impl RendererRuntime {
         };
         self.backend
             .sync_active_views(prepared_views.plans().iter().map(|view| view.view_id));
-        {
-            profiling::scope!("render::prepare_lights_for_views");
-            self.backend.prepare_lights_for_views(
-                &self.scene,
-                prepared_views
-                    .plans()
-                    .iter()
-                    .map(FrameViewPlan::light_view_desc),
-            );
-        }
         let shared = {
             profiling::scope!("render::extract_frame_shared");
             // Hand the per-view render context and shader permutation through so the backend
@@ -138,10 +128,16 @@ impl RendererRuntime {
                 .iter()
                 .map(|plan| (plan.render_context(), plan.shader_permutation()))
                 .collect::<Vec<_>>();
+            let light_descs = prepared_views
+                .plans()
+                .iter()
+                .map(FrameViewPlan::light_view_desc)
+                .collect::<Vec<_>>();
             self.backend.extract_frame_shared(
                 &self.scene,
                 select_inner_parallelism(prepared_views.plans()),
                 &view_perms,
+                &light_descs,
             )
         };
         ExtractedFrame::new(prepared_views, shared)

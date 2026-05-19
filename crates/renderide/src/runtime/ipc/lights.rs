@@ -23,17 +23,19 @@ impl RendererRuntime {
             logger::warn!("lights_buffer_renderer_submission: no shared memory (id={buffer_id})");
             return;
         };
-        apply_lights_buffer_submission(&mut self.scene, shm, ipc, sub);
+        if apply_lights_buffer_submission(&mut self.scene, shm, ipc, sub) {
+            self.backend.note_scene_lights_changed();
+        }
     }
 }
 
-/// Copies packed light rows from SHM, stores them in the scene cache, and ACKs the host.
+/// Copies packed light rows from SHM, stores them in the scene cache, ACKs the host, and returns whether the cache changed.
 fn apply_lights_buffer_submission(
     scene: &mut SceneCoordinator,
     shm: &mut SharedMemoryAccessor,
     ipc: Option<&mut DualQueueIpc>,
     sub: LightsBufferRendererSubmission,
-) {
+) -> bool {
     let buffer_id = sub.lights_buffer_unique_id;
     let ctx = format!("lights_buffer_renderer_submission id={buffer_id}");
     let vec = match shm.access_copy_memory_packable_rows::<LightData>(
@@ -43,7 +45,7 @@ fn apply_lights_buffer_submission(
     ) {
         Ok(v) => v,
         Err(_e) => {
-            return;
+            return false;
         }
     };
     let count = sub.lights_count.max(0) as usize;
@@ -65,4 +67,5 @@ fn apply_lights_buffer_submission(
             },
         ));
     }
+    true
 }
