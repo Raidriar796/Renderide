@@ -77,6 +77,43 @@ fn selected_pbs_materials_keep_sorted_shader_variant_bits() -> io::Result<()> {
         );
     }
 
+    let pbs_slice = material_source("pbsslice.wgsl")?;
+    for (constant_name, bit_index) in [
+        ("PBSSLICE_KW_ALBEDOTEX", 0),
+        ("PBSSLICE_KW_ALPHACLIP", 1),
+        ("PBSSLICE_KW_DETAIL_ALBEDOTEX", 2),
+        ("PBSSLICE_KW_DETAIL_NORMALMAP", 3),
+        ("PBSSLICE_KW_EMISSIONTEX", 4),
+        ("PBSSLICE_KW_METALLICMAP", 5),
+        ("PBSSLICE_KW_NORMALMAP", 6),
+        ("PBSSLICE_KW_OCCLUSION", 7),
+        ("PBSSLICE_KW_OBJECT_SPACE", 8),
+        ("PBSSLICE_KW_WORLD_SPACE", 9),
+    ] {
+        assert_keyword_bit(&pbs_slice, "pbsslice.wgsl", constant_name, bit_index);
+    }
+
+    let pbs_slice_specular = material_source("pbsslicespecular.wgsl")?;
+    for (constant_name, bit_index) in [
+        ("PBSSLICESPECULAR_KW_ALBEDOTEX", 0),
+        ("PBSSLICESPECULAR_KW_ALPHACLIP", 1),
+        ("PBSSLICESPECULAR_KW_DETAIL_ALBEDOTEX", 2),
+        ("PBSSLICESPECULAR_KW_DETAIL_NORMALMAP", 3),
+        ("PBSSLICESPECULAR_KW_EMISSIONTEX", 4),
+        ("PBSSLICESPECULAR_KW_METALLICMAP", 5),
+        ("PBSSLICESPECULAR_KW_NORMALMAP", 6),
+        ("PBSSLICESPECULAR_KW_OCCLUSION", 7),
+        ("PBSSLICESPECULAR_KW_OBJECT_SPACE", 8),
+        ("PBSSLICESPECULAR_KW_WORLD_SPACE", 9),
+    ] {
+        assert_keyword_bit(
+            &pbs_slice_specular,
+            "pbsslicespecular.wgsl",
+            constant_name,
+            bit_index,
+        );
+    }
+
     let pbs_vertex_color_transparent = material_source("pbsvertexcolortransparent.wgsl")?;
     for (constant_name, bit_index) in [
         ("PBSVCT_KW_ALBEDOTEX", 0),
@@ -124,6 +161,33 @@ fn selected_pbs_materials_keep_sorted_shader_variant_bits() -> io::Result<()> {
         ("PIXELATE_KW_RESOLUTION_TEX", 1),
     ] {
         assert_keyword_bit(&pixelate, "pixelate.wgsl", constant_name, bit_index);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn pbs_slice_keeps_unity_space_and_alpha_clip_precedence() -> io::Result<()> {
+    let slice_family = module_source("pbs/families/slice.wgsl")?;
+    assert!(
+        slice_family.contains("if (object_space_enabled) {\n        return false;\n    }"),
+        "PBSSlice must match Unity's OBJECT_SPACE branch taking precedence over WORLD_SPACE"
+    );
+    assert!(
+        slice_family.contains("return world_space_enabled || (!object_space_enabled);"),
+        "PBSSlice must keep WORLD_SPACE as the implicit fallback when neither space bit is set"
+    );
+
+    for material in ["pbsslice.wgsl", "pbsslicespecular.wgsl"] {
+        let src = material_source(material)?;
+        assert!(
+            src.contains("&& c.a < mat._AlphaClip"),
+            "{material} must match Unity `clip(c.a - _AlphaClip)` equality behavior"
+        );
+        assert!(
+            !src.contains("&& c.a <= mat._AlphaClip"),
+            "{material} must not reject alpha exactly equal to `_AlphaClip`"
+        );
     }
 
     Ok(())

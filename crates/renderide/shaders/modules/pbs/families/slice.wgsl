@@ -37,6 +37,9 @@ fn evaluate_planes(
 }
 
 fn use_world_space(world_space_enabled: bool, object_space_enabled: bool) -> bool {
+    if (object_space_enabled) {
+        return false;
+    }
     return world_space_enabled || (!object_space_enabled);
 }
 

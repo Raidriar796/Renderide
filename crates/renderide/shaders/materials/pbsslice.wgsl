@@ -4,8 +4,8 @@
 //! w = signed offset) are evaluated in the fragment shader; fragments whose minimum plane distance
 //! is negative are discarded. Within the `[_EdgeTransitionStart, _EdgeTransitionEnd]` band we blend
 //! toward `_EdgeColor` and `_EdgeEmissionColor` to highlight the cut edge. Slice coordinates can be
-//! driven from world space or object space via the `WORLD_SPACE` / `OBJECT_SPACE` variant bits
-//! (world space is the default when neither is set).
+//! driven from world space or object space via the `WORLD_SPACE` / `OBJECT_SPACE` variant bits.
+//! Object space wins if both bits are set; world space is the default when neither is set.
 //!
 //! Froox variant bits populate `_RenderideVariantBits`; PBSSlice's ten keywords (sorted
 //! alphabetically) occupy bits 0-9.
@@ -186,7 +186,7 @@ fn fs_main(
         c = vec4<f32>(c.rgb * detail, c.a);
     }
 
-    if (pbs_kw(PBSSLICE_KW_ALPHACLIP) && c.a <= mat._AlphaClip) {
+    if (pbs_kw(PBSSLICE_KW_ALPHACLIP) && c.a < mat._AlphaClip) {
         discard;
     }
 

@@ -185,7 +185,7 @@ fn fs_main(
         c = vec4<f32>(c.rgb * detail, c.a);
     }
 
-    if (pbs_kw(PBSSLICESPECULAR_KW_ALPHACLIP) && c.a <= mat._AlphaClip) {
+    if (pbs_kw(PBSSLICESPECULAR_KW_ALPHACLIP) && c.a < mat._AlphaClip) {
         discard;
     }
 
